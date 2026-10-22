@@ -24,9 +24,14 @@ import (
 	"github.com/halimi/halimisoc/internal/webauthn"
 )
 
+// defaultMaxEvents bounds the demo store so verbose telemetry cannot OOM it.
+const defaultMaxEvents = 100_000
+
 // Store is an in-memory Store.
 type Store struct {
 	mu sync.RWMutex
+
+	maxEvents int
 
 	events    map[string]*model.Event
 	alerts    map[string]*alerts.Alert
@@ -43,9 +48,17 @@ type Store struct {
 	eventOrder []string
 }
 
-// New returns an empty in-memory store.
-func New() *Store {
+// New returns an empty in-memory store with the default event bound.
+func New() *Store { return NewWithMaxEvents(defaultMaxEvents) }
+
+// NewWithMaxEvents returns an empty store that evicts the oldest event once
+// more than maxEvents are retained. A non-positive limit uses the default.
+func NewWithMaxEvents(maxEvents int) *Store {
+	if maxEvents <= 0 {
+		maxEvents = defaultMaxEvents
+	}
 	return &Store{
+		maxEvents: maxEvents,
 		events:    map[string]*model.Event{},
 		alerts:    map[string]*alerts.Alert{},
 		agents:    map[string]*agents.Agent{},
@@ -76,6 +89,11 @@ func (s *Store) InsertEvent(_ context.Context, e *model.Event) (bool, error) {
 	}
 	s.events[e.ID] = cloneEvent(e)
 	s.eventOrder = append(s.eventOrder, e.ID)
+	for len(s.events) > s.maxEvents && len(s.eventOrder) > 0 {
+		oldest := s.eventOrder[0]
+		s.eventOrder = s.eventOrder[1:]
+		delete(s.events, oldest)
+	}
 	return true, nil
 }
 
@@ -191,6 +209,30 @@ func (s *Store) PurgeRawEvidence(_ context.Context, olderThan time.Time) (int64,
 	return purged, nil
 }
 
+// PurgeEvents deletes the whole record, unlike PurgeRawEvidence.
+// Alerts keep event ids as historical references, not foreign keys.
+func (s *Store) PurgeEvents(_ context.Context, olderThan time.Time) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var purged int64
+	kept := s.eventOrder[:0]
+	for _, id := range s.eventOrder {
+		e, ok := s.events[id]
+		if !ok {
+			continue
+		}
+		if e.Time.Before(olderThan) {
+			delete(s.events, id)
+			purged++
+			continue
+		}
+		kept = append(kept, id)
+	}
+	s.eventOrder = kept
+	return purged, nil
+}
+
 // --- Alerts ---------------------------------------------------------------
 
 func (s *Store) SaveAlert(_ context.Context, a *alerts.Alert) error {
@@ -288,6 +330,19 @@ func (s *Store) CountAlertsBySeverity(_ context.Context) (map[model.Severity]int
 		out[a.Severity]++
 	}
 	return out, nil
+}
+
+func (s *Store) PurgeAlerts(_ context.Context, olderThan time.Time) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var purged int64
+	for id, a := range s.alerts {
+		if a.CreatedAt.Before(olderThan) {
+			delete(s.alerts, id)
+			purged++
+		}
+	}
+	return purged, nil
 }
 
 // --- Agents ---------------------------------------------------------------
@@ -674,6 +729,22 @@ func (s *Store) ListAudit(_ context.Context, limit int, cursor string) ([]*audit
 		next = s.audit[end-1].ID
 	}
 	return out, next, nil
+}
+
+func (s *Store) PurgeAudit(_ context.Context, olderThan time.Time) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kept := s.audit[:0]
+	var purged int64
+	for _, e := range s.audit {
+		if e.Timestamp.Before(olderThan) {
+			purged++
+			continue
+		}
+		kept = append(kept, e)
+	}
+	s.audit = kept
+	return purged, nil
 }
 
 // --- Lifecycle ------------------------------------------------------------

@@ -9,6 +9,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/halimi/halimisoc/internal/alerts"
@@ -26,7 +27,8 @@ type AlertSink interface {
 
 // Engine evaluates a rule set against events.
 type Engine struct {
-	set   *rules.Set
+	// set is swapped atomically because Reload races ingestion.
+	set   atomic.Pointer[rules.Set]
 	state *state.State
 	sink  AlertSink
 	reg   *metrics.Registry
@@ -39,14 +41,15 @@ func New(set *rules.Set, st *state.State, sink AlertSink, reg *metrics.Registry)
 	if reg == nil {
 		reg = metrics.New()
 	}
-	return &Engine{
-		set:   set,
+	e := &Engine{
 		state: st,
 		sink:  sink,
 		reg:   reg,
 		now:   func() time.Time { return time.Now().UTC() },
 		newID: func() string { return id.New(id.KindAlert) },
 	}
+	e.set.Store(set)
+	return e
 }
 
 // SetClock overrides the clock. Test-only.
@@ -56,7 +59,7 @@ func (e *Engine) SetClock(f func() time.Time) { e.now = f }
 func (e *Engine) SetIDGenerator(f func() string) { e.newID = f }
 
 // Rules returns the active rule set.
-func (e *Engine) Rules() *rules.Set { return e.set }
+func (e *Engine) Rules() *rules.Set { return e.set.Load() }
 
 // Reload swaps the active rule set transactionally.
 //
@@ -70,11 +73,17 @@ func (e *Engine) Reload(set *rules.Set) {
 	if set == nil {
 		return
 	}
-	e.set = set
+	e.set.Store(set)
 }
 
 // StateSize returns the number of tracked detection windows, for metrics.
 func (e *Engine) StateSize() int { return e.state.Size() }
+
+// Prune discards state older than the 24h rule window cap.
+// Without it the cooldown map grows for every (rule, group) pair ever seen.
+func (e *Engine) Prune(now time.Time) {
+	e.state.Prune(now, state.DefaultOptions().MaxFiringAge)
+}
 
 // Process evaluates one event and returns any alerts it produced.
 //
@@ -88,7 +97,7 @@ func (e *Engine) Process(ctx context.Context, ev *model.Event) ([]*alerts.Alert,
 	start := e.now()
 	var produced []*alerts.Alert
 
-	for _, rule := range e.set.Rules() {
+	for _, rule := range e.set.Load().Rules() {
 		if !rule.Matches(ev) {
 			continue
 		}

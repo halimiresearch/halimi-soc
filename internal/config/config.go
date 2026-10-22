@@ -39,6 +39,7 @@ func Load() (*Config, error) {
 		WebAuthnRPID:      strings.TrimSpace(os.Getenv("HALIMISOC_WEBAUTHN_RP_ID")),
 		WebAuthnRPName:    env("HALIMISOC_WEBAUTHN_RP_NAME", "HalimiSOC"),
 		WebAuthnOrigins:   splitCSV(os.Getenv("HALIMISOC_WEBAUTHN_ORIGINS")),
+		SecureCookies:     envBool("HALIMISOC_SECURE_COOKIES", false),
 	}
 	if err := c.Validate(); err != nil {
 		return nil, err

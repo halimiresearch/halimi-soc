@@ -2,6 +2,8 @@ package correlation_test
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -372,5 +374,59 @@ func TestRotatedInfrastructureStartsNewIncident(t *testing.T) {
 	}
 	if second.Incident.ID == first.Incident.ID {
 		t.Fatal("distinct attacks share one incident id")
+	}
+}
+
+// slowOpenStore widens the read-modify-write window so concurrency does not depend on scheduler luck.
+type slowOpenStore struct {
+	*memorystore.Store
+	delay time.Duration
+}
+
+func (s *slowOpenStore) ListOpenIncidents(ctx context.Context) ([]*incidents.Incident, error) {
+	time.Sleep(s.delay)
+	return s.Store.ListOpenIncidents(ctx)
+}
+
+func TestConcurrentAlertsDoNotLoseMerges(t *testing.T) {
+	store := &slowOpenStore{Store: memorystore.New(), delay: 5 * time.Millisecond}
+	reg := metrics.New()
+	eng := correlation.NewEngine(store, reg)
+	base := time.Now().UTC()
+	eng.SetClock(func() time.Time { return base })
+
+	const n = 24
+	start := make(chan struct{})
+	var ready, done sync.WaitGroup
+	ready.Add(n)
+	done.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer done.Done()
+			ready.Done()
+			<-start
+			a := alert(fmt.Sprintf("alt_%02d", i), "ssh-bruteforce", "web-01", "root", "203.0.113.7",
+				model.SeverityHigh, base.Add(time.Duration(i)*time.Millisecond))
+			if _, err := eng.Process(context.Background(), a); err != nil {
+				t.Errorf("Process(%d) = %v", i, err)
+			}
+		}(i)
+	}
+	ready.Wait()
+	close(start)
+	done.Wait()
+
+	open, err := store.ListOpenIncidents(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(open) != 1 {
+		t.Fatalf("open incidents = %d, want 1", len(open))
+	}
+	if got := len(open[0].AlertIDs); got != n {
+		t.Fatalf("merged alerts = %d, want %d (lost update)", got, n)
+	}
+	if got := reg.Counter(metrics.IncidentCreatedTotal); got != 1 {
+		t.Fatalf("incident_created_total = %v, want 1", got)
 	}
 }

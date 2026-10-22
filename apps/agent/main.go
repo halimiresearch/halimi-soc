@@ -18,6 +18,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -121,9 +122,13 @@ func run() error {
 	// instead of blocking, so a slow server degrades collection rather than
 	// stalling it, and no telemetry is dropped without a counter.
 	queue := make(chan []*model.Event, 8)
+	producerDone := make(chan struct{})
 
+	var senderWG sync.WaitGroup
+	senderWG.Add(1)
 	go func() {
-		if err := senderLoop(ctx, client, spool, queue, opts, log); err != nil && !errors.Is(err, context.Canceled) {
+		defer senderWG.Done()
+		if err := senderLoop(ctx, client, spool, queue, opts, log, producerDone); err != nil && !errors.Is(err, context.Canceled) {
 			log.Error("sender stopped", "error", err)
 			stop()
 		}
@@ -132,9 +137,16 @@ func run() error {
 
 	producer := newProducer(opts, client, spool, queue, log)
 	if opts.simulate {
-		return producer.runSimulation(ctx)
+		err = producer.runSimulation(ctx)
+	} else {
+		err = producer.runTail(ctx)
 	}
-	return producer.runTail(ctx)
+
+	// Stop collecting before the sender drains the queue; exiting early loses the last batch.
+	close(producerDone)
+	stop()
+	senderWG.Wait()
+	return err
 }
 
 func (o options) validate() error {

@@ -217,6 +217,105 @@ func TestPurgeRawEvidenceKeepsStructuredEvent(t *testing.T) {
 	}
 }
 
+func TestPurgeEventsRemovesExpiredRecords(t *testing.T) {
+	s := memorystore.New()
+	now := time.Now().UTC()
+	old := newEvent("evt_old", "web-01", now.Add(-48*time.Hour))
+	recent := newEvent("evt_new", "web-01", now)
+
+	for _, e := range []*model.Event{old, recent} {
+		if _, err := s.InsertEvent(ctx(), e); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	purged, err := s.PurgeEvents(ctx(), now.Add(-24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if purged != 1 {
+		t.Fatalf("purged = %d, want 1", purged)
+	}
+	if _, err := s.GetEvent(ctx(), "evt_old"); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("expired event still present: %v", err)
+	}
+	if _, err := s.GetEvent(ctx(), "evt_new"); err != nil {
+		t.Fatalf("recent event was purged: %v", err)
+	}
+
+	// The insertion-order index must be compacted too, otherwise a long-running
+	// demo keeps the ids of deleted events forever.
+	page, err := s.ListEvents(ctx(), storage.EventQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Events) != 1 || page.Events[0].ID != "evt_new" {
+		t.Fatalf("events after purge = %v", page.Events)
+	}
+}
+
+func TestPurgeAlertsRemovesExpiredRecords(t *testing.T) {
+	s := memorystore.New()
+	now := time.Now().UTC()
+	save := func(id string, createdAt time.Time) {
+		t.Helper()
+		a := &alerts.Alert{
+			ID: id, RuleID: "r", RuleVersion: 1, RuleName: "R",
+			Severity: model.SeverityHigh, Status: alerts.StatusOpen,
+			Title: "t", Reason: "why", EventIDs: []string{"evt_1"},
+			WindowStart: createdAt, WindowEnd: createdAt,
+			CreatedAt: createdAt, UpdatedAt: createdAt,
+		}
+		if err := s.SaveAlert(ctx(), a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	save("alt_old", now.Add(-48*time.Hour))
+	save("alt_new", now)
+
+	purged, err := s.PurgeAlerts(ctx(), now.Add(-24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if purged != 1 {
+		t.Fatalf("purged = %d, want 1", purged)
+	}
+	if _, err := s.GetAlert(ctx(), "alt_old"); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("expired alert still present: %v", err)
+	}
+	if _, err := s.GetAlert(ctx(), "alt_new"); err != nil {
+		t.Fatalf("recent alert was purged: %v", err)
+	}
+}
+
+func TestPurgeAuditRemovesExpiredRecords(t *testing.T) {
+	s := memorystore.New()
+	now := time.Now().UTC()
+	for _, e := range []*audit.Entry{
+		{ID: "aud_old", Actor: "operator:admin", Action: audit.ActionLoginSuccess, Resource: "session", Result: audit.ResultSuccess, Timestamp: now.Add(-48 * time.Hour)},
+		{ID: "aud_new", Actor: "operator:admin", Action: audit.ActionLoginSuccess, Resource: "session", Result: audit.ResultSuccess, Timestamp: now},
+	} {
+		if err := s.AppendAudit(ctx(), e); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	purged, err := s.PurgeAudit(ctx(), now.Add(-24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if purged != 1 {
+		t.Fatalf("purged = %d, want 1", purged)
+	}
+	entries, _, err := s.ListAudit(ctx(), 10, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].ID != "aud_new" {
+		t.Fatalf("audit after purge = %v", entries)
+	}
+}
+
 func TestAlertStatusTransition(t *testing.T) {
 	s := memorystore.New()
 	now := time.Now().UTC()
@@ -693,5 +792,39 @@ func TestUserBackupHashesAreIsolated(t *testing.T) {
 	}
 	if again.BackupHashes[0] != "h1" {
 		t.Fatal("backup hashes mutated through a listed copy")
+	}
+}
+
+func TestEventStoreIsBounded(t *testing.T) {
+	s := memorystore.NewWithMaxEvents(3)
+	base := time.Now().UTC()
+
+	for i := 0; i < 5; i++ {
+		e := newEvent("evt_"+string(rune('a'+i)), "web-01", base.Add(time.Duration(i)*time.Second))
+		if _, err := s.InsertEvent(ctx(), e); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	n, err := s.CountEvents(ctx())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 3 {
+		t.Fatalf("stored events = %d, want the bound 3", n)
+	}
+	if _, err := s.GetEvent(ctx(), "evt_a"); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("oldest event survived eviction: %v", err)
+	}
+	if _, err := s.GetEvent(ctx(), "evt_e"); err != nil {
+		t.Fatalf("newest event was evicted: %v", err)
+	}
+
+	page, err := s.ListEvents(ctx(), storage.EventQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Events) != 3 {
+		t.Fatalf("listed events = %d, want 3", len(page.Events))
 	}
 }

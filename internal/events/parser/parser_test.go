@@ -268,6 +268,30 @@ func TestSudoParserPamAuthFailure(t *testing.T) {
 	}
 }
 
+func TestSudoParserTrailingLognameDoesNotPanic(t *testing.T) {
+	p := &SudoParser{}
+	inputs := []string{
+		`Aug 19 11:22:01 web-01 sudo: pam_unix(sudo:auth): authentication failure; logname=`,
+		`Aug 19 11:22:01 web-01 sudo: pam_unix(sudo:auth): authentication failure; logname=   `,
+	}
+	for _, raw := range inputs {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("panic on %q: %v", raw, r)
+				}
+			}()
+			res := p.Parse(line(raw))
+			if res.Status != StatusValid || res.Event == nil {
+				t.Fatalf("status = %s on %q, want a valid event", res.Status, raw)
+			}
+			if res.Event.Actor != "" {
+				t.Errorf("actor = %q, want empty when logname has no value", res.Event.Actor)
+			}
+		}()
+	}
+}
+
 func TestAuthorizedKeysParserRequiresVerb(t *testing.T) {
 	p := &AuthorizedKeysParser{}
 

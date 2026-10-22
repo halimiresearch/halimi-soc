@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/halimi/halimisoc/internal/alerts"
@@ -16,6 +17,10 @@ import (
 
 // Engine attaches alerts to incidents.
 type Engine struct {
+	// mu serializes the read-modify-write; a multi-instance deployment would
+	// need a database transaction instead.
+	mu sync.Mutex
+
 	store storage.Store
 	opts  Options
 	reg   *metrics.Registry
@@ -58,6 +63,9 @@ func (e *Engine) Process(ctx context.Context, a *alerts.Alert) (*Result, error) 
 	if a == nil {
 		return nil, fmt.Errorf("correlation: nil alert")
 	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	now := e.now()
 
 	candidates, err := e.store.ListOpenIncidents(ctx)

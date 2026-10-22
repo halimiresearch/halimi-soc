@@ -83,6 +83,7 @@ type Store interface {
 	GetEvent(ctx context.Context, id string) (*model.Event, error)
 	CountEvents(ctx context.Context) (int64, error)
 	PurgeRawEvidence(ctx context.Context, olderThan time.Time) (int64, error)
+	PurgeEvents(ctx context.Context, olderThan time.Time) (int64, error)
 
 	// Alerts.
 	SaveAlert(ctx context.Context, a *alerts.Alert) error
@@ -90,6 +91,7 @@ type Store interface {
 	ListAlerts(ctx context.Context, q AlertQuery) (*AlertPage, error)
 	UpdateAlertStatus(ctx context.Context, id string, to alerts.Status, at time.Time) (*alerts.Alert, error)
 	CountAlertsBySeverity(ctx context.Context) (map[model.Severity]int64, error)
+	PurgeAlerts(ctx context.Context, olderThan time.Time) (int64, error)
 
 	// Agents.
 	SaveAgent(ctx context.Context, a *agents.Agent) error
@@ -131,6 +133,7 @@ type Store interface {
 	// Audit.
 	AppendAudit(ctx context.Context, e *audit.Entry) error
 	ListAudit(ctx context.Context, limit int, cursor string) ([]*audit.Entry, string, error)
+	PurgeAudit(ctx context.Context, olderThan time.Time) (int64, error)
 
 	// Passkeys (WebAuthn).
 	SavePasskey(ctx context.Context, p *webauthn.Passkey) error

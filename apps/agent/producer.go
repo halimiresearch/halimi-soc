@@ -78,8 +78,9 @@ func (p *producer) runTail(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			p.flushOffset(t)
-			p.enqueue(pending)
+			// Persist the assembler's final record before advancing the offset; the sender may already be gone.
+			pending = append(pending, p.parseRecords(assembler.Flush(), p.opts.file)...)
+			p.persistPending(t, pending)
 			return nil
 		case <-flushTicker.C:
 			// Emit the assembler's held record so a busy-but-quiet file does not
@@ -116,6 +117,20 @@ func (p *producer) runTail(ctx context.Context) error {
 		}
 		time.Sleep(p.opts.interval)
 	}
+}
+
+// persistPending spools the final batch before advancing the offset.
+// A failed write keeps the offset, so the lines are re-read; the server dedupes by id.
+func (p *producer) persistPending(t *tailer, events []*model.Event) bool {
+	if len(events) > 0 {
+		if err := p.spool.Append(events); err != nil {
+			p.log.Error("spool append failed on shutdown; keeping offset so events are re-read",
+				"error", err, "events", len(events))
+			return false
+		}
+	}
+	p.flushOffset(t)
+	return true
 }
 
 // flushOffset persists the reader position.

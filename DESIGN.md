@@ -981,6 +981,13 @@ line as unavailable rather than as an empty log line.
 Raw retention may not exceed event retention; startup refuses that combination,
 because it would mean raw evidence outliving the event that justifies it.
 
+At event retention the structured event is deleted, together with alerts and
+audit rows older than the same cutoff. Alert and incident event ids are
+historical references, not foreign keys, so this cannot cascade into an
+investigation record. Incidents are operator-owned and are never deleted by
+retention. Each pass also prunes detection state older than the maximum rule
+window (24 h).
+
 ### 12.5 Concurrency
 
 - Event insert uses `ON CONFLICT DO NOTHING` and reads the row count: no

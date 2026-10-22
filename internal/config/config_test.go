@@ -310,6 +310,19 @@ func TestWebAuthnOriginsFailClosedInProduction(t *testing.T) {
 	}
 }
 
+func TestLoadReadsSecureCookies(t *testing.T) {
+	t.Setenv("HALIMISOC_ENV", "development")
+	t.Setenv("HALIMISOC_SECURE_COOKIES", "true")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+	if !cfg.SecureCookies {
+		t.Fatal("HALIMISOC_SECURE_COOKIES=true was not loaded")
+	}
+}
+
 func TestLoadReadsHardeningSettings(t *testing.T) {
 	t.Setenv("HALIMISOC_SESSION_IDLE", "90m")
 	t.Setenv("HALIMISOC_METRICS_TOKEN", "metrics-token-value")

@@ -183,6 +183,16 @@ func (s *Store) PurgeRawEvidence(ctx context.Context, olderThan time.Time) (int6
 	return tag.RowsAffected(), nil
 }
 
+// PurgeEvents deletes structured events; alert and incident event ids are
+// historical references, so retention cannot cascade into them.
+func (s *Store) PurgeEvents(ctx context.Context, olderThan time.Time) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM events WHERE event_time < $1`, olderThan.UTC())
+	if err != nil {
+		return 0, fmt.Errorf("postgres: purge events: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 // --- Alerts ---------------------------------------------------------------
 
 func (s *Store) SaveAlert(ctx context.Context, a *alerts.Alert) error {
@@ -194,7 +204,7 @@ func (s *Store) SaveAlert(ctx context.Context, a *alerts.Alert) error {
 		return fmt.Errorf("postgres: marshal alert evidence: %w", err)
 	}
 
-	_, err = s.pool.Exec(ctx, `
+	tag, err := s.pool.Exec(ctx, `
 		INSERT INTO alerts (
 			id, rule_id, rule_version, rule_name, severity, status, title, reason,
 			host, actor, src_ip, entity, event_ids, count, window_start, window_end,
@@ -210,6 +220,10 @@ func (s *Store) SaveAlert(ctx context.Context, a *alerts.Alert) error {
 	)
 	if err != nil {
 		return fmt.Errorf("postgres: save alert: %w", err)
+	}
+	// Match the memory backend: a duplicate id is a conflict, not a silent success.
+	if tag.RowsAffected() == 0 {
+		return storage.ErrConflict
 	}
 	return nil
 }
@@ -331,6 +345,14 @@ func (s *Store) CountAlertsBySeverity(ctx context.Context) (map[model.Severity]i
 		out[model.Severity(sev)] = n
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) PurgeAlerts(ctx context.Context, olderThan time.Time) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM alerts WHERE created_at < $1`, olderThan.UTC())
+	if err != nil {
+		return 0, fmt.Errorf("postgres: purge alerts: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 // --- Agents ---------------------------------------------------------------
@@ -774,8 +796,9 @@ func (s *Store) ListIncidents(ctx context.Context, limit int, cursor string) (*i
 }
 
 func (s *Store) ListOpenIncidents(ctx context.Context) ([]*incidents.Incident, error) {
+	// FALSE_POSITIVE is terminal too; merging into a rejected incident would make the rejection lie.
 	rows, err := s.pool.Query(ctx, incidentSelect+`
-		WHERE status NOT IN ('RESOLVED','CLOSED')
+		WHERE status NOT IN ('RESOLVED','CLOSED','FALSE_POSITIVE')
 		ORDER BY id DESC
 		LIMIT 1000`)
 	if err != nil {
@@ -849,6 +872,14 @@ func (s *Store) ListAudit(ctx context.Context, limit int, cursor string) ([]*aud
 		out = append(out, &e)
 	}
 	return out, next, rows.Err()
+}
+
+func (s *Store) PurgeAudit(ctx context.Context, olderThan time.Time) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM audit_logs WHERE timestamp < $1`, olderThan.UTC())
+	if err != nil {
+		return 0, fmt.Errorf("postgres: purge audit: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 // --- Passkeys -------------------------------------------------------------

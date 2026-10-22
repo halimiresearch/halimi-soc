@@ -22,12 +22,15 @@ const (
 // fresh telemetry is not delayed behind a backlog, and the spool is drained
 // afterwards. Both paths are idempotent on the server, so a partial failure
 // results in re-delivery rather than loss.
-func senderLoop(ctx context.Context, c *client, sp *spool, queue <-chan []*model.Event, opts options, log *slog.Logger) error {
+func senderLoop(ctx context.Context, c *client, sp *spool, queue <-chan []*model.Event, opts options, log *slog.Logger, producerDone <-chan struct{}) error {
 	backoff := minBackoff
 
 	for {
 		select {
 		case <-ctx.Done():
+			// Wait for the producer's final batch, then spool whatever is still queued.
+			<-producerDone
+			drainQueueToSpool(sp, queue, log)
 			return nil
 		case batch := <-queue:
 			if err := deliver(ctx, c, sp, batch, &backoff, log); err != nil {
@@ -65,6 +68,10 @@ func deliver(ctx context.Context, c *client, sp *spool, batch []*model.Event, ba
 			return nil
 		}
 		if errors.Is(err, context.Canceled) {
+			// Spool the in-flight batch; the server collapses a replay by event id.
+			if serr := sp.Append(batch); serr != nil {
+				log.Error("spool append failed on shutdown, events lost", "error", serr, "events", len(batch))
+			}
 			return nil
 		}
 
@@ -89,6 +96,23 @@ func deliver(ctx context.Context, c *client, sp *spool, batch []*model.Event, ba
 		case <-time.After(jittered(*backoff)):
 		}
 		*backoff = nextBackoff(*backoff)
+	}
+}
+
+// drainQueueToSpool persists batches left in the channel at shutdown.
+func drainQueueToSpool(sp *spool, queue <-chan []*model.Event, log *slog.Logger) {
+	for {
+		select {
+		case batch := <-queue:
+			if len(batch) == 0 {
+				continue
+			}
+			if err := sp.Append(batch); err != nil {
+				log.Error("spool append failed on shutdown, events lost", "error", err, "events", len(batch))
+			}
+		default:
+			return
+		}
 	}
 }
 

@@ -190,7 +190,7 @@ func run() error {
 		MaxHeaderBytes:    1 << 20,
 	}
 
-	go maintain(ctx, store, cfg, log)
+	go maintain(ctx, store, detector, cfg, log)
 	go func() {
 		log.Info("halimisoc api listening", "addr", cfg.ListenAddr, "version", version, "env", cfg.Environment)
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -313,38 +313,65 @@ func bootstrap(ctx context.Context, cfg *config.Config, store storage.Store, log
 	return nil
 }
 
+// maintenancePruner is the detection state cleanup used by retention.
+type maintenancePruner interface {
+	Prune(now time.Time)
+}
+
 // maintain runs periodic retention and cleanup work.
-func maintain(ctx context.Context, store storage.Store, cfg *config.Config, log *slog.Logger) {
+func maintain(ctx context.Context, store storage.Store, pruner maintenancePruner, cfg *config.Config, log *slog.Logger) {
 	ticker := time.NewTicker(10 * time.Minute)
 	defer ticker.Stop()
 
-	runOnce := func() {
-		now := time.Now().UTC()
-
-		rawCutoff := now.Add(-time.Duration(cfg.Retention.RawRetention.Default) * time.Hour)
-		if purged, err := store.PurgeRawEvidence(ctx, rawCutoff); err != nil {
-			log.Error("raw evidence retention failed", "error", err)
-		} else if purged > 0 {
-			// Structured events outlive raw evidence, so alert and incident
-			// references remain valid; only the raw line is dropped.
-			log.Info("raw evidence expired", "events", purged)
-		}
-
-		if removed, err := store.DeleteExpiredSessions(ctx, now); err != nil {
-			log.Error("session cleanup failed", "error", err)
-		} else if removed > 0 {
-			log.Info("expired sessions removed", "count", removed)
-		}
-	}
-
-	runOnce()
+	runMaintenance(ctx, store, pruner, cfg, log)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			runOnce()
+			runMaintenance(ctx, store, pruner, cfg, log)
 		}
+	}
+}
+
+// runMaintenance performs one retention pass. Raw evidence expires first;
+// events, alerts and audit rows share the longer event window. Incidents are kept.
+func runMaintenance(ctx context.Context, store storage.Store, pruner maintenancePruner, cfg *config.Config, log *slog.Logger) {
+	now := time.Now().UTC()
+
+	rawCutoff := now.Add(-time.Duration(cfg.Retention.RawRetention.Default) * time.Hour)
+	if purged, err := store.PurgeRawEvidence(ctx, rawCutoff); err != nil {
+		log.Error("raw evidence retention failed", "error", err)
+	} else if purged > 0 {
+		// Only the raw line is dropped; the structured event and its references stay valid.
+		log.Info("raw evidence expired", "events", purged)
+	}
+
+	eventCutoff := now.Add(-time.Duration(cfg.Retention.EventRetention.Default) * time.Hour)
+	if purged, err := store.PurgeEvents(ctx, eventCutoff); err != nil {
+		log.Error("event retention failed", "error", err)
+	} else if purged > 0 {
+		log.Info("events expired", "count", purged)
+	}
+	if purged, err := store.PurgeAlerts(ctx, eventCutoff); err != nil {
+		log.Error("alert retention failed", "error", err)
+	} else if purged > 0 {
+		log.Info("alerts expired", "count", purged)
+	}
+	if purged, err := store.PurgeAudit(ctx, eventCutoff); err != nil {
+		log.Error("audit retention failed", "error", err)
+	} else if purged > 0 {
+		log.Info("audit records expired", "count", purged)
+	}
+
+	if pruner != nil {
+		pruner.Prune(now)
+	}
+
+	if removed, err := store.DeleteExpiredSessions(ctx, now); err != nil {
+		log.Error("session cleanup failed", "error", err)
+	} else if removed > 0 {
+		log.Info("expired sessions removed", "count", removed)
 	}
 }
 

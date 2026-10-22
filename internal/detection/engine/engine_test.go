@@ -481,3 +481,47 @@ func TestLowAndSlowSprayDoesNotAlert(t *testing.T) {
 		t.Fatalf("alerts = %d, want 0 for a below-threshold spray", got)
 	}
 }
+
+func TestPruneRemovesExpiredDetectionState(t *testing.T) {
+	eng, _, _, now := newEngine(t, bruteForceRule)
+	base := *now
+
+	if _, err := eng.Process(context.Background(), failedLogin("evt_1", "203.0.113.7", base)); err != nil {
+		t.Fatal(err)
+	}
+	if eng.StateSize() == 0 {
+		t.Fatal("expected detection state after processing an event")
+	}
+
+	eng.Prune(base.Add(25 * time.Hour))
+	if got := eng.StateSize(); got != 0 {
+		t.Fatalf("state size = %d after prune, want 0", got)
+	}
+}
+
+func TestReloadIsSafeDuringProcessing(t *testing.T) {
+	eng, _, _, now := newEngine(t, bruteForceRule)
+	setA := mustSet(t, bruteForceRule)
+	setB := mustSet(t, bruteForceRule, chainRule)
+	base := *now
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 500; i++ {
+			eng.Reload(setA)
+			eng.Reload(setB)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 500; i++ {
+			if _, err := eng.Process(context.Background(), failedLogin(eventID(i), "203.0.113.7", base)); err != nil {
+				t.Errorf("Process() = %v", err)
+				return
+			}
+		}
+	}()
+	wg.Wait()
+}

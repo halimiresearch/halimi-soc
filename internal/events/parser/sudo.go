@@ -108,7 +108,7 @@ func (p *SudoParser) Parse(l Line) Result {
 			// Fall back to the logname= field, which is present even when
 			// user= is missing.
 			if i := strings.Index(body, "logname="); i >= 0 {
-				user = strings.Fields(body[i+len("logname="):])[0]
+				user = firstField(body[i+len("logname="):])
 			}
 		}
 		e.Actor = user
