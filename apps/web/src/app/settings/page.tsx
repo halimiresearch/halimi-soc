@@ -27,7 +27,7 @@ export default async function SettingsPage() {
   return (
     <Shell title="Settings" subtitle="Account security" username={session.username} role={session.role} active="settings">
       <MfaSettings initialEnabled={enabled} />
-      <PasskeySettings initialKeys={keys} />
+      <PasskeySettings initialKeys={keys} mfaEnabled={enabled} />
     </Shell>
   )
 }

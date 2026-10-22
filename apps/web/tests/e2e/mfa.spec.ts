@@ -30,6 +30,7 @@ test.describe('multi-factor authentication', () => {
     const operatorCsrf = ((await response.json()) as { csrf_token: string }).csrf_token
     response = await request.post(`${API}/api/v1/auth/mfa/setup`, {
       headers: { 'X-CSRF-Token': operatorCsrf },
+      data: { password },
     })
     expect(response.ok()).toBeTruthy()
     const setup = (await response.json()) as { secret: string }
@@ -96,6 +97,7 @@ test.describe('multi-factor authentication', () => {
     await page.goto(`${WEB}/settings`)
     await expect(page.getByRole('heading', { name: 'Passkeys' })).toBeVisible()
     await page.getByLabel('Passkey name').fill('e2e-key')
+    await page.getByLabel('Password for passkey registration').fill(password)
     await page.getByRole('button', { name: 'Register this device' }).click()
     await expect(page.getByText('e2e-key')).toBeVisible()
 

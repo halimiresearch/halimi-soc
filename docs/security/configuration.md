@@ -65,7 +65,7 @@ into the server-to-API `Cookie` header.
 |---|---|
 | `HALIMISOC_MFA_KEY` unset | TOTP secrets store as `plain:<base32>`; production warns at startup |
 | `HALIMISOC_MFA_KEY` set (base64 32B) | secrets sealed AES-256-GCM `v1:nonce:ct` |
-| `POST /auth/mfa/setup` | authenticated + CSRF; rotates pending secret, returns secret + `otpauth_url` |
+| `POST /auth/mfa/setup` | authenticated + CSRF + step-up (password, plus current code when MFA is enabled); rotates pending secret, returns secret + `otpauth_url` |
 | `POST /auth/mfa/enable` | verifies code (±1 step), enables, returns 10 backup codes once (hashes only stored) |
 | Login | `{username,password,totp_code\|backup_code}`; missing code -> 401 `MFA_REQUIRED`; backup codes single-use |
 | `POST /auth/mfa/disable` | needs password + code; clears secret and backups |
@@ -76,11 +76,12 @@ into the server-to-API `Cookie` header.
 
 | Setting | Behaviour |
 |---|---|
-| `HALIMISOC_WEBAUTHN_RP_ID` (default `127.0.0.1`) | effective console domain, no port; must be a hostname, never an IP literal — browsers reject IPs as invalid RP IDs |
-| `HALIMISOC_WEBAUTHN_ORIGINS` (default both loopback `:3000` origins) | exact allowlist checked against `clientData.origin` on every ceremony |
+| `HALIMISOC_WEBAUTHN_RP_ID` (dev default `127.0.0.1`) | effective console domain, no port; must be a hostname, never an IP literal — browsers reject IPs as invalid RP IDs. Required explicitly in production. |
+| `HALIMISOC_WEBAUTHN_ORIGINS` (dev default both loopback `:3000` origins) | exact allowlist checked against `clientData.origin` on every ceremony. Required explicitly in production. |
 | Production with `http://` non-loopback origin | fail closed at startup |
 | Algorithms / formats | ES256 only; attestation `none` + `packed` self; anything else rejected |
 | Challenges | 32B random, single-use, 5-minute TTL, bounded in-memory store |
+| Registration | session + CSRF + step-up (password, plus current code when MFA is enabled) |
 | Login | passwordless; success mints a normal session and rotates the sign count; backwards counters rejected as suspected clones |
 
 | Setting | Behaviour |

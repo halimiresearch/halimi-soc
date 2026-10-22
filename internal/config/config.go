@@ -163,6 +163,15 @@ func (c *Config) Validate() error {
 		return err
 	}
 	if c.IsProduction() {
+		// The loopback defaults are for local development only. Silently using
+		// them in production makes every browser ceremony fail, so demand the
+		// real RP up front.
+		if strings.TrimSpace(c.WebAuthnRPID) == "" {
+			return errors.New("HALIMISOC_WEBAUTHN_RP_ID is required in production")
+		}
+		if len(c.WebAuthnOrigins) == 0 {
+			return errors.New("HALIMISOC_WEBAUTHN_ORIGINS is required in production")
+		}
 		for _, o := range c.WebAuthnOrigins {
 			if strings.HasPrefix(o, "http://") && !isLoopbackOrigin(o) {
 				return fmt.Errorf("HALIMISOC_WEBAUTHN_ORIGINS must use https in production (got %q)", o)

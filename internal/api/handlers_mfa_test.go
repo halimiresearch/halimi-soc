@@ -1,12 +1,20 @@
 package api_test
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/halimi/halimisoc/internal/auth"
 	"github.com/halimi/halimisoc/internal/mfa"
+	"github.com/halimi/halimisoc/internal/storage"
+	memorystore "github.com/halimi/halimisoc/internal/storage/memory"
 )
 
 // Full MFA lifecycle: setup -> enable -> login with TOTP -> disable.
@@ -28,7 +36,8 @@ func TestMFALifecycle(t *testing.T) {
 	setup := decode[struct {
 		Secret     string `json:"secret"`
 		OTPAUTHURL string `json:"otpauth_url"`
-	}](t, h.do(http.MethodPost, "/api/v1/auth/mfa/setup", nil, headers))
+	}](t, h.do(http.MethodPost, "/api/v1/auth/mfa/setup",
+		map[string]string{"password": "dave-password-value123"}, headers))
 	if setup.Secret == "" || setup.OTPAUTHURL == "" {
 		t.Fatalf("setup = %+v", setup)
 	}
@@ -89,7 +98,8 @@ func TestMFAAdminReset(t *testing.T) {
 	headers := map[string]string{"X-CSRF-Token": csrf}
 	setup := decode[struct {
 		Secret string `json:"secret"`
-	}](t, h.do(http.MethodPost, "/api/v1/auth/mfa/setup", nil, headers))
+	}](t, h.do(http.MethodPost, "/api/v1/auth/mfa/setup",
+		map[string]string{"password": "erin-password-value123"}, headers))
 	code, _ := mfa.CodeAt(setup.Secret, time.Now().UTC())
 	resp := h.do(http.MethodPost, "/api/v1/auth/mfa/enable", map[string]string{"code": code}, headers)
 	resp.Body.Close()
@@ -118,7 +128,8 @@ func TestMFALoginIsRateLimited(t *testing.T) {
 	headers := map[string]string{"X-CSRF-Token": csrf}
 	setup := decode[struct {
 		Secret string `json:"secret"`
-	}](t, h.do(http.MethodPost, "/api/v1/auth/mfa/setup", nil, headers))
+	}](t, h.do(http.MethodPost, "/api/v1/auth/mfa/setup",
+		map[string]string{"password": "frank-password-value123"}, headers))
 	code, _ := mfa.CodeAt(setup.Secret, time.Now().UTC())
 	resp := h.do(http.MethodPost, "/api/v1/auth/mfa/enable", map[string]string{"code": code}, headers)
 	resp.Body.Close()
@@ -141,6 +152,84 @@ func freshJar(t *testing.T) http.CookieJar {
 		t.Fatal(err)
 	}
 	return jar
+}
+
+// slowUserSaveStore widens the read-modify-write window around a backup code
+// so a non-atomic consume cannot hide behind scheduler timing.
+type slowUserSaveStore struct {
+	storage.Store
+	delay time.Duration
+}
+
+func (s *slowUserSaveStore) SaveUser(ctx context.Context, u *auth.User) error {
+	time.Sleep(s.delay)
+	return s.Store.SaveUser(ctx, u)
+}
+
+func TestBackupCodeIsSingleUseUnderConcurrency(t *testing.T) {
+	store := memorystore.New()
+	h := newHarnessWithStore(t, store, func(inner storage.Store) storage.Store {
+		return &slowUserSaveStore{Store: inner, delay: 100 * time.Millisecond}
+	})
+	createOperator(t, h, "judy", "judy-password-value123", "ANALYST")
+	csrf, _ := h.login("judy", "judy-password-value123")
+	headers := map[string]string{"X-CSRF-Token": csrf}
+
+	setup := decode[struct {
+		Secret string `json:"secret"`
+	}](t, h.do(http.MethodPost, "/api/v1/auth/mfa/setup",
+		map[string]string{"password": "judy-password-value123"}, headers))
+	code, _ := mfa.CodeAt(setup.Secret, time.Now().UTC())
+	enabled := decode[struct {
+		BackupCodes []string `json:"backup_codes"`
+	}](t, h.do(http.MethodPost, "/api/v1/auth/mfa/enable",
+		map[string]string{"code": code}, headers))
+
+	statuses := make([]int, 8)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range statuses {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			raw, _ := json.Marshal(map[string]string{
+				"username": "judy", "password": "judy-password-value123",
+				"backup_code": enabled.BackupCodes[0],
+			})
+			req, err := http.NewRequest(http.MethodPost, h.server.URL+"/api/v1/auth/login", bytes.NewReader(raw))
+			if err != nil {
+				return
+			}
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				return
+			}
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			statuses[i] = resp.StatusCode
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	successes := 0
+	for _, status := range statuses {
+		if status == http.StatusOK {
+			successes++
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("backup code accepted %d times, want exactly 1 (statuses %v)", successes, statuses)
+	}
+	user, err := store.GetUserByUsername(context.Background(), "judy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(user.BackupHashes) != mfa.BackupCodeCount-1 {
+		t.Fatalf("remaining backup hashes = %d, want %d", len(user.BackupHashes), mfa.BackupCodeCount-1)
+	}
 }
 
 func (h *harness) loginWithMFA(username, password, totp, backup string) (string, int) {
@@ -175,4 +264,75 @@ func userIDByName(t *testing.T, h *harness, username string) string {
 	}
 	t.Fatalf("user %q not found", username)
 	return ""
+}
+
+func TestMFASetupRequiresStepUp(t *testing.T) {
+	h := newHarness(t)
+	createOperator(t, h, "kate", "kate-password-value123", "ANALYST")
+	csrf, _ := h.login("kate", "kate-password-value123")
+	headers := map[string]string{"X-CSRF-Token": csrf}
+
+	// A session alone cannot rotate the factor: the current password is required.
+	resp := h.do(http.MethodPost, "/api/v1/auth/mfa/setup", nil, headers)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("setup without password = %d, want 400", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	resp = h.do(http.MethodPost, "/api/v1/auth/mfa/setup",
+		map[string]string{"password": "wrong-password-value"}, headers)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("setup with wrong password = %d, want 401", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	setup := decode[struct {
+		Secret string `json:"secret"`
+	}](t, h.do(http.MethodPost, "/api/v1/auth/mfa/setup",
+		map[string]string{"password": "kate-password-value123"}, headers))
+	code, _ := mfa.CodeAt(setup.Secret, time.Now().UTC())
+	enabled := decode[struct {
+		BackupCodes []string `json:"backup_codes"`
+	}](t, h.do(http.MethodPost, "/api/v1/auth/mfa/enable",
+		map[string]string{"code": code}, headers))
+	if len(enabled.BackupCodes) != mfa.BackupCodeCount {
+		t.Fatalf("backup codes = %d", len(enabled.BackupCodes))
+	}
+
+	// With MFA enabled, password alone is not enough to rotate it.
+	resp = h.do(http.MethodPost, "/api/v1/auth/mfa/setup",
+		map[string]string{"password": "kate-password-value123"}, headers)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("setup without current code = %d, want 401", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	code, _ = mfa.CodeAt(setup.Secret, time.Now().UTC())
+	resp = h.do(http.MethodPost, "/api/v1/auth/mfa/setup",
+		map[string]string{"password": "kate-password-value123", "code": code}, headers)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("setup with both factors = %d, want 200", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+func TestMFAEnableIsRateLimited(t *testing.T) {
+	h := newHarness(t)
+	createOperator(t, h, "mona", "mona-password-value123", "ANALYST")
+	csrf, _ := h.login("mona", "mona-password-value123")
+	headers := map[string]string{"X-CSRF-Token": csrf}
+	h.do(http.MethodPost, "/api/v1/auth/mfa/setup",
+		map[string]string{"password": "mona-password-value123"}, headers).Body.Close()
+
+	var last int
+	for i := 0; i < 15; i++ {
+		resp := h.do(http.MethodPost, "/api/v1/auth/mfa/enable",
+			map[string]string{"code": "000000"}, headers)
+		last = resp.StatusCode
+		resp.Body.Close()
+		if last == http.StatusTooManyRequests {
+			return
+		}
+	}
+	t.Fatalf("mfa enable guessing never throttled, last = %d", last)
 }

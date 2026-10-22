@@ -10,6 +10,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -596,6 +597,13 @@ func (s *Server) requireCSRF(w http.ResponseWriter, r *http.Request, p *principa
 	return true
 }
 
+// Prune drops expired rate-limit buckets so the entry bound is enforced by
+// time, not only by eviction under pressure.
+func (s *Server) Prune(now time.Time) {
+	s.limiter.Prune(now)
+	s.analyzeLimiter.Prune(now)
+}
+
 // writeAudit appends an audit entry, logging rather than failing if the write
 // fails: an audit outage must not turn into an availability outage.
 func (s *Server) writeAudit(r *http.Request, e audit.Entry) {
@@ -605,8 +613,15 @@ func (s *Server) writeAudit(r *http.Request, e audit.Entry) {
 	if e.SourceIP == "" {
 		e.SourceIP = clientIP(r)
 	}
+	if err := e.Validate(); err != nil {
+		s.log.Error("invalid audit entry dropped", "action", e.Action, "error", err)
+		return
+	}
 	e.ID = id.New(id.KindAudit)
-	if err := s.store.AppendAudit(r.Context(), &e); err != nil {
+	// The request context is cancelled when the client disconnects; the
+	// security record must still be written after that point.
+	ctx := context.WithoutCancel(r.Context())
+	if err := s.store.AppendAudit(ctx, &e); err != nil {
 		s.log.Error("audit append failed", "action", e.Action, "error", err)
 	}
 }

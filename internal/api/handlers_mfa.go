@@ -34,6 +34,11 @@ type mfaEnableRequest struct {
 	Code string `json:"code"`
 }
 
+type mfaSetupRequest struct {
+	Password string `json:"password"`
+	Code     string `json:"code"`
+}
+
 type mfaDisableRequest struct {
 	Password string `json:"password"`
 	Code     string `json:"code"`
@@ -56,6 +61,14 @@ func (s *Server) handleMFASetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.requireCSRF(w, r, p) {
+		return
+	}
+	var req mfaSetupRequest
+	if err := s.decodeJSON(w, r, &req, 4<<10); err != nil {
+		writeError(w, http.StatusBadRequest, CodeBadRequest, "invalid request body")
+		return
+	}
+	if !s.requireStepUp(w, r, p, req.Password, req.Code) {
 		return
 	}
 
@@ -105,6 +118,19 @@ func (s *Server) handleMFAEnable(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, CodeBadRequest, "invalid request body")
 		return
 	}
+	now := s.now()
+	userKey := "mfa:user:" + p.User.ID
+	ipKey := "mfa:ip:" + clientIP(r)
+	if wait := s.limiter.RetryAfter(userKey, now); wait > 0 {
+		w.Header().Set("Retry-After", formatSeconds(wait))
+		writeError(w, http.StatusTooManyRequests, CodeRateLimited, "too many attempts, try again later")
+		return
+	}
+	if wait := s.limiter.RetryAfter(ipKey, now); wait > 0 {
+		w.Header().Set("Retry-After", formatSeconds(wait))
+		writeError(w, http.StatusTooManyRequests, CodeRateLimited, "too many attempts, try again later")
+		return
+	}
 	if p.User.TOTPSecret == "" {
 		writeError(w, http.StatusConflict, CodeConflict, "run MFA setup first")
 		return
@@ -114,7 +140,9 @@ func (s *Server) handleMFAEnable(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, CodeInternal, "MFA setup is unusable; run setup again")
 		return
 	}
-	if err := mfa.Verify(secret, req.Code, s.now()); err != nil {
+	if err := mfa.Verify(secret, req.Code, now); err != nil {
+		s.limiter.Fail(userKey, now)
+		s.limiter.Fail(ipKey, now)
 		s.writeAudit(r, audit.Entry{
 			Actor:      audit.ActorRef(audit.ActorUser, p.User.Username),
 			Action:     audit.ActionMFAEnabled,
@@ -135,7 +163,6 @@ func (s *Server) handleMFAEnable(w http.ResponseWriter, r *http.Request) {
 	for _, c := range codes {
 		hashes = append(hashes, mfa.HashBackupCode(c))
 	}
-	now := s.now()
 	p.User.TOTPEnabled = true
 	p.User.TOTPEnrolledAt = &now
 	p.User.BackupHashes = hashes
@@ -151,6 +178,7 @@ func (s *Server) handleMFAEnable(w http.ResponseWriter, r *http.Request) {
 		Result:     audit.ResultSuccess,
 		Detail:     "mfa enabled; backup codes issued",
 	})
+	s.limiter.Succeed(userKey)
 	writeJSON(w, http.StatusOK, map[string]any{"backup_codes": codes})
 }
 
@@ -171,13 +199,30 @@ func (s *Server) handleMFADisable(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, CodeConflict, "MFA is not enabled")
 		return
 	}
+	now := s.now()
+	userKey := "mfa:user:" + p.User.ID
+	ipKey := "mfa:ip:" + clientIP(r)
+	if wait := s.limiter.RetryAfter(userKey, now); wait > 0 {
+		w.Header().Set("Retry-After", formatSeconds(wait))
+		writeError(w, http.StatusTooManyRequests, CodeRateLimited, "too many attempts, try again later")
+		return
+	}
+	if wait := s.limiter.RetryAfter(ipKey, now); wait > 0 {
+		w.Header().Set("Retry-After", formatSeconds(wait))
+		writeError(w, http.StatusTooManyRequests, CodeRateLimited, "too many attempts, try again later")
+		return
+	}
 	// Prove both factors before removing the second: password + current code.
 	ok, err := auth.VerifyPassword(req.Password, p.User.PasswordHash)
 	if err != nil || !ok {
+		s.limiter.Fail(userKey, now)
+		s.limiter.Fail(ipKey, now)
 		writeError(w, http.StatusUnauthorized, CodeUnauthorized, "invalid credentials")
 		return
 	}
-	if !s.verifyUserCode(p.User, req.Code) {
+	if _, ok := s.verifyUserCode(p.User, req.Code); !ok {
+		s.limiter.Fail(userKey, now)
+		s.limiter.Fail(ipKey, now)
 		s.writeAudit(r, audit.Entry{
 			Actor:      audit.ActorRef(audit.ActorUser, p.User.Username),
 			Action:     audit.ActionMFADisabled,
@@ -205,6 +250,7 @@ func (s *Server) handleMFADisable(w http.ResponseWriter, r *http.Request) {
 		Result:     audit.ResultSuccess,
 		Detail:     "mfa disabled",
 	})
+	s.limiter.Succeed(userKey)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "mfa_disabled"})
 }
 
@@ -245,28 +291,95 @@ func (s *Server) handleMFAReset(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "mfa_reset"})
 }
 
+// requireStepUp re-proves the operator's current factors before a sensitive
+// self-service change. A stolen session alone must not rotate MFA or add a
+// passkey; the limiter keys are shared with login MFA so guessing is bounded.
+func (s *Server) requireStepUp(w http.ResponseWriter, r *http.Request, p *principal, password, code string) bool {
+	now := s.now()
+	userKey := "mfa:user:" + p.User.ID
+	ipKey := "mfa:ip:" + clientIP(r)
+	if wait := s.limiter.RetryAfter(userKey, now); wait > 0 {
+		w.Header().Set("Retry-After", formatSeconds(wait))
+		writeError(w, http.StatusTooManyRequests, CodeRateLimited, "too many attempts, try again later")
+		return false
+	}
+	if wait := s.limiter.RetryAfter(ipKey, now); wait > 0 {
+		w.Header().Set("Retry-After", formatSeconds(wait))
+		writeError(w, http.StatusTooManyRequests, CodeRateLimited, "too many attempts, try again later")
+		return false
+	}
+	if strings.TrimSpace(password) == "" {
+		writeError(w, http.StatusBadRequest, CodeBadRequest, "current password is required")
+		return false
+	}
+	deny := func(detail string) bool {
+		s.limiter.Fail(userKey, now)
+		s.limiter.Fail(ipKey, now)
+		s.writeAudit(r, audit.Entry{
+			Actor:      audit.ActorRef(audit.ActorUser, p.User.Username),
+			Action:     audit.ActionStepUpFailure,
+			Resource:   "user",
+			ResourceID: p.User.ID,
+			Result:     audit.ResultDenied,
+			Detail:     detail,
+		})
+		writeError(w, http.StatusUnauthorized, CodeUnauthorized, "invalid credentials")
+		return false
+	}
+	ok, err := auth.VerifyPassword(password, p.User.PasswordHash)
+	if err != nil || !ok {
+		return deny("current password mismatch")
+	}
+	if p.User.TOTPEnabled {
+		backupHash, ok := s.verifyUserCode(p.User, code)
+		if !ok {
+			return deny("current code mismatch")
+		}
+		if backupHash != "" {
+			consumed, err := s.store.ConsumeBackupCode(r.Context(), p.User.ID, backupHash)
+			if err != nil {
+				s.fail(w, err, "consume backup code")
+				return false
+			}
+			if !consumed {
+				return deny("backup code already used")
+			}
+			s.reg.Inc(metrics.MFABackupUsedTotal)
+			s.writeAudit(r, audit.Entry{
+				Actor:      audit.ActorRef(audit.ActorUser, p.User.Username),
+				Action:     audit.ActionMFABackupUsed,
+				Resource:   "user",
+				ResourceID: p.User.ID,
+				Result:     audit.ResultSuccess,
+				Detail:     "backup code consumed",
+			})
+		}
+	}
+	s.limiter.Succeed(userKey)
+	return true
+}
+
 // verifyUserCode checks a TOTP code or a single-use backup code.
-// A backup code is consumed on success. Callers must SaveUser after true.
-func (s *Server) verifyUserCode(u *auth.User, code string) bool {
+// For a backup code it returns the matching stored hash so the caller can
+// consume it atomically instead of rewriting the whole user record.
+func (s *Server) verifyUserCode(u *auth.User, code string) (backupHash string, ok bool) {
 	code = strings.TrimSpace(code)
 	if code == "" {
-		return false
+		return "", false
 	}
 	if u.TOTPSecret != "" {
 		if secret, err := mfa.Open(u.TOTPSecret, s.mfaKey); err == nil {
 			if mfa.Verify(secret, code, s.now()) == nil {
-				return true
+				return "", true
 			}
 		}
 	}
-	for i, h := range u.BackupHashes {
+	for _, h := range u.BackupHashes {
 		if mfa.VerifyBackupCode(code, h) {
-			// Consume single-use.
-			u.BackupHashes = append(u.BackupHashes[:i], u.BackupHashes[i+1:]...)
-			return true
+			return h, true
 		}
 	}
-	return false
+	return "", false
 }
 
 // verifyLoginMFA enforces the second factor after a correct password.
@@ -278,10 +391,8 @@ func (s *Server) verifyLoginMFA(w http.ResponseWriter, r *http.Request, u *auth.
 		return true
 	}
 	code := strings.TrimSpace(totpCode)
-	isBackup := false
 	if code == "" {
 		code = strings.TrimSpace(backupCode)
-		isBackup = true
 	}
 	userKey := "mfa:user:" + u.ID
 	if wait := s.limiter.RetryAfter(userKey, now); wait > 0 {
@@ -309,9 +420,7 @@ func (s *Server) verifyLoginMFA(w http.ResponseWriter, r *http.Request, u *auth.
 		writeError(w, http.StatusUnauthorized, CodeMFARequired, "multi-factor code required")
 		return false
 	}
-	// Snapshot hashes so a backup-code consume persists even though u is a copy.
-	before := len(u.BackupHashes)
-	ok := s.verifyUserCode(u, code)
+	backupHash, ok := s.verifyUserCode(u, code)
 	if !ok {
 		s.limiter.Fail(userKey, now)
 		s.limiter.Fail(accountKey, now)
@@ -327,23 +436,31 @@ func (s *Server) verifyLoginMFA(w http.ResponseWriter, r *http.Request, u *auth.
 		writeError(w, http.StatusUnauthorized, CodeUnauthorized, "invalid credentials")
 		return false
 	}
-	if len(u.BackupHashes) != before {
-		isBackup = true
-		if err := s.store.SaveUser(r.Context(), u); err != nil {
-			s.log.Warn("consume backup code failed", "user", u.ID, "error", err)
-		} else {
-			s.reg.Inc(metrics.MFABackupUsedTotal)
-			s.writeAudit(r, audit.Entry{
-				Actor:      audit.ActorRef(audit.ActorUser, u.Username),
-				Action:     audit.ActionMFABackupUsed,
-				Resource:   "session",
-				ResourceID: u.ID,
-				Result:     audit.ResultSuccess,
-				Detail:     "backup code consumed",
-			})
+	if backupHash != "" {
+		consumed, err := s.store.ConsumeBackupCode(r.Context(), u.ID, backupHash)
+		if err != nil {
+			s.fail(w, err, "consume backup code")
+			return false
 		}
+		if !consumed {
+			// Another request redeemed this code between verify and consume.
+			s.limiter.Fail(userKey, now)
+			s.limiter.Fail(accountKey, now)
+			s.limiter.Fail(ipKey, now)
+			s.reg.Inc(metrics.MFAFailureTotal)
+			writeError(w, http.StatusUnauthorized, CodeUnauthorized, "invalid credentials")
+			return false
+		}
+		s.reg.Inc(metrics.MFABackupUsedTotal)
+		s.writeAudit(r, audit.Entry{
+			Actor:      audit.ActorRef(audit.ActorUser, u.Username),
+			Action:     audit.ActionMFABackupUsed,
+			Resource:   "session",
+			ResourceID: u.ID,
+			Result:     audit.ResultSuccess,
+			Detail:     "backup code consumed",
+		})
 	}
-	_ = isBackup
 	s.limiter.Succeed(userKey)
 	return true
 }

@@ -42,6 +42,7 @@ const (
 	ActionMFAReset              Action = "MFA_RESET"
 	ActionMFALoginFailure       Action = "MFA_LOGIN_FAILURE"
 	ActionMFABackupUsed         Action = "MFA_BACKUP_USED"
+	ActionStepUpFailure         Action = "STEP_UP_FAILURE"
 	ActionPasskeyRegistered     Action = "PASSKEY_REGISTERED"
 	ActionPasskeyDeleted        Action = "PASSKEY_DELETED"
 	ActionPasskeyLoginSuccess   Action = "PASSKEY_LOGIN_SUCCESS"

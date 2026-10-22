@@ -5,9 +5,17 @@ import { registerCredential, webauthnSupported } from '@/lib/webauthn'
 
 // Passkey management: register platform authenticators, list and delete.
 // Registration uses attestation "none" server-side; only ES256 keys accepted.
-export function PasskeySettings({ initialKeys }: { initialKeys: Array<{ id: string; name?: string }> }) {
+export function PasskeySettings({
+  initialKeys,
+  mfaEnabled,
+}: {
+  initialKeys: Array<{ id: string; name?: string }>
+  mfaEnabled: boolean
+}) {
   const [keys, setKeys] = useState(initialKeys)
   const [name, setName] = useState('')
+  const [password, setPassword] = useState('')
+  const [code, setCode] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   // Same SSR concern as the login form: decide after mount.
@@ -78,20 +86,38 @@ export function PasskeySettings({ initialKeys }: { initialKeys: Array<{ id: stri
       </ul>
 
       {canUsePasskey ? (
-        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+        <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
           <input
             aria-label="Passkey name"
             placeholder="e.g. laptop"
             value={name}
             onChange={(e) => setName(e.target.value)}
           />
+          <input
+            type="password"
+            aria-label="Password for passkey registration"
+            placeholder="Current password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+          {mfaEnabled ? (
+            <input
+              aria-label="Code for passkey registration"
+              placeholder="6-digit code"
+              value={code}
+              onChange={(e) => setCode(e.target.value.trim())}
+            />
+          ) : null}
           <button
-            disabled={busy}
+            disabled={busy || !password || (mfaEnabled && !code)}
             onClick={async () => {
               setBusy(true)
               setError(null)
               try {
-                const begin = (await call('passkey.register.begin', {})) as {
+                const begin = (await call('passkey.register.begin', {
+                  password,
+                  code: mfaEnabled ? code : undefined,
+                })) as {
                   challenge: string
                   rp: { id: string; name: string }
                   user: { id: string; name: string; displayName: string }

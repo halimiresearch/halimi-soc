@@ -554,6 +554,22 @@ func (s *Store) SaveUser(ctx context.Context, u *auth.User) error {
 	return nil
 }
 
+func (s *Store) ConsumeBackupCode(ctx context.Context, userID, hash string) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE users
+		SET backup_codes = COALESCE((
+			SELECT jsonb_agg(code)
+			FROM jsonb_array_elements(backup_codes) AS code
+			WHERE code <> to_jsonb($2::text)
+		), '[]'::jsonb)
+		WHERE id = $1 AND backup_codes @> to_jsonb($2::text)`,
+		userID, hash)
+	if err != nil {
+		return false, fmt.Errorf("postgres: consume backup code: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 func (s *Store) GetUserByUsername(ctx context.Context, username string) (*auth.User, error) {
 	row := s.pool.QueryRow(ctx, `
 		SELECT id, username, password_hash, role, disabled, created_at, last_login_at,

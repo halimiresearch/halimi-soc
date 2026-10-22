@@ -51,10 +51,28 @@ export function MfaSettings({ initialEnabled }: { initialEnabled: boolean }) {
       ) : null}
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+        <input
+          type="password"
+          aria-label="Password for MFA setup"
+          placeholder="Current password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+        />
+        {enabled ? (
+          <input
+            aria-label="Code for MFA setup"
+            placeholder="6-digit code"
+            value={code}
+            onChange={(e) => setCode(e.target.value.trim())}
+          />
+        ) : null}
         <button
-          disabled={busy}
+          disabled={busy || !password || (enabled && !code)}
           onClick={async () => {
-            const out = (await call('mfa.setup', {})) as { secret?: string; otpauth_url?: string } | null
+            const out = (await call('mfa.setup', { password, code: enabled ? code : undefined })) as {
+              secret?: string
+              otpauth_url?: string
+            } | null
             if (out) {
               setSecret(out.secret ?? null)
               setOtpauth(out.otpauth_url ?? null)

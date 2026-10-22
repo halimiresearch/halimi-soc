@@ -343,8 +343,12 @@ export function mfaStatus(session: WebSession, signal?: AbortSignal) {
   return request<{ enabled: boolean; enrolled_at?: string }>('/auth/mfa/status', { session, signal })
 }
 
-export function mfaSetup(session: WebSession) {
-  return request<{ secret: string; otpauth_url: string }>('/auth/mfa/setup', { session, method: 'POST' })
+export function mfaSetup(session: WebSession, password: string, code?: string) {
+  return request<{ secret: string; otpauth_url: string }>('/auth/mfa/setup', {
+    session,
+    method: 'POST',
+    body: { password, code },
+  })
 }
 
 export function mfaEnable(session: WebSession, code: string) {
@@ -372,13 +376,13 @@ export function listPasskeys(session: WebSession, signal?: AbortSignal) {
   return request<{ passkeys: PasskeySummary[] }>('/auth/webauthn/credentials', { session, signal })
 }
 
-export function passkeyRegisterBegin(session: WebSession) {
+export function passkeyRegisterBegin(session: WebSession, password: string, code?: string) {
   return request<{
     challenge: string
     rp: { id: string; name: string }
     user: { id: string; name: string; displayName: string }
     excludeCredentials: Array<{ type: string; id: string }>
-  }>('/auth/webauthn/register/begin', { session, method: 'POST' })
+  }>('/auth/webauthn/register/begin', { session, method: 'POST', body: { password, code } })
 }
 
 export function passkeyRegisterComplete(

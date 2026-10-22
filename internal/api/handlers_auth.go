@@ -43,6 +43,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	username := strings.ToLower(strings.TrimSpace(req.Username))
+	if !validUsername(username) {
+		writeError(w, http.StatusBadRequest, CodeBadRequest, "invalid username")
+		return
+	}
 	ip := clientIP(r)
 	now := s.now()
 

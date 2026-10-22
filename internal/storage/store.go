@@ -116,6 +116,11 @@ type Store interface {
 	CountUsers(ctx context.Context) (int64, error)
 	RecordLogin(ctx context.Context, userID string, at time.Time) error
 
+	// ConsumeBackupCode removes hash from the user's single-use backup codes.
+	// It returns false when the hash was already consumed, so two concurrent
+	// logins cannot both redeem the same code.
+	ConsumeBackupCode(ctx context.Context, userID, hash string) (bool, error)
+
 	// Sessions.
 	SaveSession(ctx context.Context, s *auth.Session) error
 	GetSession(ctx context.Context, id string) (*auth.Session, error)

@@ -190,13 +190,18 @@ func run() error {
 		MaxHeaderBytes:    1 << 20,
 	}
 
-	go maintain(ctx, store, detector, cfg, log)
+	go maintain(ctx, store, prunerFunc(func(now time.Time) {
+		detector.Prune(now)
+		server.Prune(now)
+	}), cfg, log)
+	serveErr := make(chan error, 1)
 	go func() {
-		log.Info("halimisoc api listening", "addr", cfg.ListenAddr, "version", version, "env", cfg.Environment)
-		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		err := serve(httpServer, log)
+		if err != nil {
 			log.Error("http server stopped", "error", err)
 			stop()
 		}
+		serveErr <- err
 	}()
 
 	<-ctx.Done()
@@ -206,6 +211,20 @@ func run() error {
 	defer cancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("graceful shutdown: %w", err)
+	}
+	if err := <-serveErr; err != nil {
+		return fmt.Errorf("http server: %w", err)
+	}
+	return nil
+}
+
+// serve runs until the listener fails or the server is shut down. A bind
+// failure is returned so main exits non-zero instead of reporting healthy.
+func serve(srv *http.Server, log *slog.Logger) error {
+	log.Info("halimisoc api listening", "addr", srv.Addr)
+	err := srv.ListenAndServe()
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
 	}
 	return nil
 }
@@ -317,6 +336,10 @@ func bootstrap(ctx context.Context, cfg *config.Config, store storage.Store, log
 type maintenancePruner interface {
 	Prune(now time.Time)
 }
+
+type prunerFunc func(time.Time)
+
+func (f prunerFunc) Prune(now time.Time) { f(now) }
 
 // maintain runs periodic retention and cleanup work.
 func maintain(ctx context.Context, store storage.Store, pruner maintenancePruner, cfg *config.Config, log *slog.Logger) {

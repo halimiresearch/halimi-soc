@@ -60,14 +60,15 @@ const ACTIONS: Record<string, Dispatch> = {
   'rules.save': (session, id, payload) => saveRule(session, id, readYaml(payload)),
   'rules.delete': (session, id) => deleteRule(session, id),
   'rules.reload': (session) => reloadRules(session),
-  'mfa.setup': (session) => mfaSetup(session),
+  'mfa.setup': (session, _id, payload) => mfaSetup(session, readPassword(payload), readOptionalCode(payload)),
   'mfa.enable': (session, _id, payload) => mfaEnable(session, readCode(payload)),
   'mfa.disable': (session, _id, payload) => {
     const password = typeof payload.password === 'string' ? payload.password : ''
     if (!password) throw new ApiError(400, 'BAD_REQUEST', 'Current password is required.')
     return mfaDisable(session, password, readCode(payload))
   },
-  'passkey.register.begin': (session) => passkeyRegisterBegin(session),
+  'passkey.register.begin': (session, _id, payload) =>
+    passkeyRegisterBegin(session, readPassword(payload), readOptionalCode(payload)),
   'passkey.register.complete': (session, _id, payload) => {
     const challenge = typeof payload.challenge === 'string' ? payload.challenge : ''
     const id = typeof payload.id === 'string' ? payload.id : ''
@@ -95,6 +96,23 @@ const ACTIONS: Record<string, Dispatch> = {
     })
   },
   'passkey.delete': (session, id) => deletePasskey(session, id),
+}
+
+function readPassword(payload: Record<string, unknown>): string {
+  const password = payload.password
+  if (typeof password !== 'string' || password.length === 0 || password.length > 1024) {
+    throw new ApiError(400, 'BAD_REQUEST', 'Current password is required.')
+  }
+  return password
+}
+
+function readOptionalCode(payload: Record<string, unknown>): string | undefined {
+  const code = payload.code
+  if (code === undefined || code === null || code === '') return undefined
+  if (typeof code !== 'string' || code.length > 64) {
+    throw new ApiError(400, 'BAD_REQUEST', 'Invalid verification code.')
+  }
+  return code.trim()
 }
 
 function readCode(payload: Record<string, unknown>): string {

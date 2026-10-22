@@ -53,24 +53,32 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
+	return newHarnessWithStore(t, memorystore.New(), nil)
+}
+
+func newHarnessWithStore(t *testing.T, store *memorystore.Store, wrap func(storage.Store) storage.Store) *harness {
+	t.Helper()
 
 	ruleSet, err := rules.LoadDir(filepath.Join("..", "..", "packages", "rules"))
 	if err != nil {
 		t.Fatalf("load rules: %v", err)
 	}
 
-	store := memorystore.New()
+	var apiStore storage.Store = store
+	if wrap != nil {
+		apiStore = wrap(store)
+	}
 	reg := metrics.New()
-	detector := engine.New(ruleSet, state.New(state.DefaultOptions()), store, reg)
-	correlator := correlation.NewEngine(store, reg)
+	detector := engine.New(ruleSet, state.New(state.DefaultOptions()), apiStore, reg)
+	correlator := correlation.NewEngine(apiStore, reg)
 
 	opts := validation.DefaultOptions()
-	ingester := ingest.New(store, detector, correlator, opts, reg, 100)
+	ingester := ingest.New(apiStore, detector, correlator, opts, reg, 100)
 
 	hub := stream.NewHub(stream.Options{MaxSubscribers: 16, Buffer: 32})
 
 	srv := api.New(api.Options{
-		Store:        store,
+		Store:        apiStore,
 		Hub:          hub,
 		Ingester:     ingester,
 		Detector:     detector,
@@ -1068,5 +1076,17 @@ func TestListPaginationReportsCursorInSnakeCase(t *testing.T) {
 	}
 	if !bytes.HasPrefix(bytes.TrimSpace(cursor), []byte(`"`)) {
 		t.Errorf("next_cursor = %s, want a JSON string", cursor)
+	}
+}
+
+func TestLoginRejectsMalformedUsername(t *testing.T) {
+	h := newHarness(t)
+	for _, username := range []string{"bad name!", strings.Repeat("a", 9000)} {
+		resp := h.do(http.MethodPost, "/api/v1/auth/login",
+			map[string]string{"username": username, "password": "irrelevant-value"}, nil)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("login with %d-byte username = %d, want 400", len(username), resp.StatusCode)
+		}
+		resp.Body.Close()
 	}
 }

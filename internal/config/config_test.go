@@ -88,11 +88,25 @@ func TestProductionRequiresSecureSettings(t *testing.T) {
 			AdminPassword:     "a-sufficiently-long-password",
 			AgentEnrollSecret: "a-sufficiently-long-enrollment-secret",
 			SecureCookies:     true,
+			WebAuthnRPID:      "soc.example.test",
+			WebAuthnOrigins:   []string{"https://soc.example.test"},
 		}
 	}
 
 	if err := base().Validate(); err != nil {
 		t.Fatalf("valid production config rejected: %v", err)
+	}
+
+	noRPID := base()
+	noRPID.WebAuthnRPID = ""
+	if err := noRPID.Validate(); err == nil {
+		t.Error("production without an explicit WebAuthn RP ID was accepted")
+	}
+
+	noOrigins := base()
+	noOrigins.WebAuthnOrigins = nil
+	if err := noOrigins.Validate(); err == nil {
+		t.Error("production without explicit WebAuthn origins was accepted")
 	}
 
 	noCookies := base()

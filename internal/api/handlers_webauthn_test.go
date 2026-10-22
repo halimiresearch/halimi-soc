@@ -10,7 +10,11 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/halimi/halimisoc/internal/mfa"
 )
 
 var wb64 = base64.RawURLEncoding
@@ -106,10 +110,10 @@ func apiClientData(typ, challenge, origin string) []byte {
 
 // registerOne performs a full attestation-none ceremony via HTTP and returns
 // the stored passkey DB id.
-func registerOne(t *testing.T, h *harness, csrf string, name string) string {
+func registerOne(t *testing.T, h *harness, csrf, name, password string) string {
 	t.Helper()
 	begin := decode[map[string]any](t, h.do(http.MethodPost, "/api/v1/auth/webauthn/register/begin",
-		map[string]string{"name": name}, map[string]string{"X-CSRF-Token": csrf}))
+		map[string]string{"name": name, "password": password}, map[string]string{"X-CSRF-Token": csrf}))
 	ch, _ := begin["challenge"].(string)
 	if ch == "" {
 		t.Fatal("no challenge from register begin")
@@ -164,7 +168,7 @@ func TestPasskeyRegisterAndPasswordlessLogin(t *testing.T) {
 	csrf, _ := h.login("gail", "gail-password-value123")
 	headers := map[string]string{"X-CSRF-Token": csrf}
 
-	dbID := registerOne(t, h, csrf, "laptop-key")
+	dbID := registerOne(t, h, csrf, "laptop-key", "gail-password-value123")
 
 	// Listing shows the key without its public material.
 	list := decode[struct {
@@ -214,7 +218,7 @@ func TestPasskeyDelete(t *testing.T) {
 	createOperator(t, h, "hank", "hank-password-value123", "ANALYST")
 	csrf, _ := h.login("hank", "hank-password-value123")
 	headers := map[string]string{"X-CSRF-Token": csrf}
-	dbID := registerOne(t, h, csrf, "yubikey")
+	dbID := registerOne(t, h, csrf, "yubikey", "hank-password-value123")
 
 	resp := h.do(http.MethodDelete, "/api/v1/auth/webauthn/credentials/"+dbID, nil, headers)
 	if resp.StatusCode != http.StatusOK {
@@ -232,7 +236,7 @@ func TestPasskeyDelete(t *testing.T) {
 	}
 
 	// Deleting without CSRF fails closed.
-	dbID2 := registerOne(t, h, csrf, "second")
+	dbID2 := registerOne(t, h, csrf, "second", "hank-password-value123")
 	resp = h.do(http.MethodDelete, "/api/v1/auth/webauthn/credentials/"+dbID2, nil, nil)
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("delete without CSRF = %d, want 403", resp.StatusCode)
@@ -251,7 +255,7 @@ func TestPasskeyPasswordlessLoginSuccess(t *testing.T) {
 
 	// Register, keeping the private key this time.
 	begin := decode[map[string]any](t, h.do(http.MethodPost, "/api/v1/auth/webauthn/register/begin",
-		map[string]string{"name": "passkey"}, headers))
+		map[string]string{"name": "passkey", "password": "ivan-password-value123"}, headers))
 	ch, _ := begin["challenge"].(string)
 	cred := newAPICredential(t, "127.0.0.1")
 	origin := "http://127.0.0.1:3000"
@@ -323,4 +327,69 @@ func TestPasskeyPasswordlessLoginSuccess(t *testing.T) {
 		t.Fatalf("session after passkey login = %d, want 200", got.StatusCode)
 	}
 	got.Body.Close()
+}
+
+func TestPasskeyRegisterRequiresStepUp(t *testing.T) {
+	h := newHarness(t)
+	createOperator(t, h, "laura", "laura-password-value123", "ANALYST")
+	csrf, _ := h.login("laura", "laura-password-value123")
+	headers := map[string]string{"X-CSRF-Token": csrf}
+
+	resp := h.do(http.MethodPost, "/api/v1/auth/webauthn/register/begin",
+		map[string]string{"name": "key"}, headers)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("register without password = %d, want 400", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	resp = h.do(http.MethodPost, "/api/v1/auth/webauthn/register/begin",
+		map[string]string{"name": "key", "password": "wrong-password-value"}, headers)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("register with wrong password = %d, want 401", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	resp = h.do(http.MethodPost, "/api/v1/auth/webauthn/register/begin",
+		map[string]string{"name": "key", "password": "laura-password-value123"}, headers)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("register with password = %d, want 200", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// Enable MFA, then prove registration needs the second factor too.
+	setup := decode[struct {
+		Secret string `json:"secret"`
+	}](t, h.do(http.MethodPost, "/api/v1/auth/mfa/setup",
+		map[string]string{"password": "laura-password-value123"}, headers))
+	code, _ := mfa.CodeAt(setup.Secret, time.Now().UTC())
+	resp = h.do(http.MethodPost, "/api/v1/auth/mfa/enable",
+		map[string]string{"code": code}, headers)
+	resp.Body.Close()
+
+	resp = h.do(http.MethodPost, "/api/v1/auth/webauthn/register/begin",
+		map[string]string{"name": "key", "password": "laura-password-value123"}, headers)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("register without current code = %d, want 401", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	code, _ = mfa.CodeAt(setup.Secret, time.Now().UTC())
+	resp = h.do(http.MethodPost, "/api/v1/auth/webauthn/register/begin",
+		map[string]string{"name": "key", "password": "laura-password-value123", "code": code}, headers)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("register with both factors = %d, want 200", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+func TestPasskeyLoginRejectsMalformedUsername(t *testing.T) {
+	h := newHarness(t)
+	for _, username := range []string{"bad name!", strings.Repeat("a", 9000)} {
+		resp := h.do(http.MethodPost, "/api/v1/auth/webauthn/login/begin",
+			map[string]string{"username": username}, nil)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("begin with %d-byte username = %d, want 400", len(username), resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
 }

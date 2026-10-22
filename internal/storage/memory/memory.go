@@ -527,6 +527,22 @@ func (s *Store) RecordLogin(_ context.Context, userID string, at time.Time) erro
 	return nil
 }
 
+func (s *Store) ConsumeBackupCode(_ context.Context, userID, hash string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u, ok := s.users[userID]
+	if !ok {
+		return false, nil
+	}
+	for i, h := range u.BackupHashes {
+		if h == hash {
+			u.BackupHashes = append(u.BackupHashes[:i], u.BackupHashes[i+1:]...)
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (s *Store) CountUsers(_ context.Context) (int64, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

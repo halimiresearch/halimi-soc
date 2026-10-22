@@ -51,7 +51,9 @@ func cleanTransports(in []string) []string {
 }
 
 type registerBeginRequest struct {
-	Name string `json:"name"`
+	Name     string `json:"name"`
+	Password string `json:"password"`
+	Code     string `json:"code"`
 }
 
 func (s *Server) handlePasskeyRegisterBegin(w http.ResponseWriter, r *http.Request) {
@@ -63,7 +65,13 @@ func (s *Server) handlePasskeyRegisterBegin(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	var req registerBeginRequest
-	_ = s.decodeOptionalJSON(w, r, &req, 4<<10)
+	if err := s.decodeJSON(w, r, &req, 4<<10); err != nil {
+		writeError(w, http.StatusBadRequest, CodeBadRequest, "invalid request body")
+		return
+	}
+	if !s.requireStepUp(w, r, p, req.Password, req.Code) {
+		return
+	}
 	if _, err := validation.Printable(req.Name, 64); err != nil {
 		writeError(w, http.StatusBadRequest, CodeBadRequest, "invalid passkey name")
 		return
@@ -295,6 +303,10 @@ func (s *Server) handlePasskeyLoginBegin(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	username := strings.ToLower(strings.TrimSpace(req.Username))
+	if !validUsername(username) {
+		writeError(w, http.StatusBadRequest, CodeBadRequest, "invalid username")
+		return
+	}
 	now := s.now()
 	ipKey := "webauthn:ip:" + clientIP(r)
 	if username != "" {
@@ -370,6 +382,10 @@ func (s *Server) handlePasskeyLoginComplete(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	username := strings.ToLower(strings.TrimSpace(req.Username))
+	if !validUsername(username) {
+		writeError(w, http.StatusBadRequest, CodeBadRequest, "invalid username")
+		return
+	}
 	now := s.now()
 	ip := clientIP(r)
 	userKey := "webauthn:user:" + username

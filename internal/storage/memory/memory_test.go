@@ -3,6 +3,7 @@ package memory_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -826,5 +827,51 @@ func TestEventStoreIsBounded(t *testing.T) {
 	}
 	if len(page.Events) != 3 {
 		t.Fatalf("listed events = %d, want 3", len(page.Events))
+	}
+}
+
+func TestConsumeBackupCodeIsAtomic(t *testing.T) {
+	s := memorystore.New()
+	if err := s.SaveUser(ctx(), &auth.User{
+		ID: "usr_backup", Username: "backup", PasswordHash: "x",
+		Role: authorization.RoleAnalyst, CreatedAt: time.Now().UTC(),
+		BackupHashes: []string{"hash-a", "hash-b"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var consumed int32
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			ok, err := s.ConsumeBackupCode(ctx(), "usr_backup", "hash-a")
+			if err != nil {
+				t.Errorf("ConsumeBackupCode() error = %v", err)
+				return
+			}
+			if ok {
+				consumed++
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if consumed != 1 {
+		t.Fatalf("concurrent consume succeeded %d times, want exactly 1", consumed)
+	}
+	user, err := s.GetUser(ctx(), "usr_backup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(user.BackupHashes) != 1 || user.BackupHashes[0] != "hash-b" {
+		t.Fatalf("remaining hashes = %v, want [hash-b]", user.BackupHashes)
+	}
+	if ok, err := s.ConsumeBackupCode(ctx(), "usr_backup", "hash-a"); err != nil || ok {
+		t.Fatalf("reused hash = %v (err %v), want false", ok, err)
 	}
 }

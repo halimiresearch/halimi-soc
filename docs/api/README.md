@@ -57,7 +57,7 @@ conventionally configured with those names.
 | GET | `/api/v1/auth/session` | session | Returns the current user and CSRF token. |
 | POST | `/api/v1/auth/password` | session + CSRF | Self password change `{"current_password","new_password"}`; revokes all sessions including the caller. |
 | GET | `/api/v1/auth/mfa/status` | session | `{"enabled","enrolled_at"}`. |
-| POST | `/api/v1/auth/mfa/setup` | session + CSRF | Generates a sealed TOTP secret, returns `{"secret","otpauth_url"}`. Rotates pending secret. |
+| POST | `/api/v1/auth/mfa/setup` | session + CSRF + step-up | Body `{"password","code"}`; `code` is required when MFA is already enabled. Generates a sealed TOTP secret, returns `{"secret","otpauth_url"}`. Rotates pending secret. |
 | POST | `/api/v1/auth/mfa/enable` | session + CSRF | Body `{"code"}`; enables MFA and returns 10 single-use `backup_codes` (once). |
 | POST | `/api/v1/auth/mfa/disable` | session + CSRF | Body `{"password","code"}`; clears secret and backups. |
 
@@ -70,7 +70,7 @@ self-attestation, user verification required. Challenges are single-use,
 
 | Method | Path | Auth | Notes |
 |---|---|---|---|
-| POST | `/api/v1/auth/webauthn/register/begin` | session + CSRF | Returns challenge + `rp` + `excludeCredentials`. Optional `{"name"}`. |
+| POST | `/api/v1/auth/webauthn/register/begin` | session + CSRF + step-up | Body `{"name","password","code"}`; `code` is required when MFA is enabled. Returns challenge + `rp` + `excludeCredentials`. |
 | POST | `/api/v1/auth/webauthn/register/complete` | session + CSRF | Body `{"challenge","id","name","transports","response":{"clientDataJSON","attestationObject"}}`; max 10 keys. |
 | GET | `/api/v1/auth/webauthn/credentials` | session | Lists own keys (no public material). |
 | DELETE | `/api/v1/auth/webauthn/credentials/{id}` | session + CSRF | Deletes own key; warns when removing the last second factor. |
