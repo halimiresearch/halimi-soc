@@ -370,14 +370,21 @@ func TestAgentSurvivesAPIOutage(t *testing.T) {
 
 	host := fmt.Sprintf("e2e-outage-%d", time.Now().UnixNano()%1_000_000)
 	dir := t.TempDir()
+	// The state directory must be per-run: the agent persists its token there,
+	// so a shared path would carry a credential into the next run and into the
+	// repository checkout.
+	stateDir := filepath.Join(dir, "state")
 
 	// Enroll against the live server so the agent has a working credential.
 	binary := buildBinary(t, "./apps/agent", "halimisoc-agent-outage")
-	enroll := exec.Command(binary, "-server", env.baseURL, "-enroll-token", "e2e-enrollment-secret-value", "-host", host, "-simulate", "-insecure")
+	enroll := exec.Command(binary, "-server", env.baseURL, "-enroll-token", "e2e-enrollment-secret-value", "-host", host, "-simulate", "-insecure", "-state-dir", stateDir)
 	enroll.Dir = repoRoot(t)
 	enroll.Env = os.Environ()
 	if out, err := enroll.CombinedOutput(); err != nil {
 		t.Fatalf("initial agent run failed: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "token")); err != nil {
+		t.Fatalf("enrollment did not persist a token: %v", err)
 	}
 
 	// Now take the server away and confirm the agent spools instead of failing.
@@ -389,17 +396,16 @@ func TestAgentSurvivesAPIOutage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// With the server gone, a fresh agent with a bogus token must not crash; it
-	// should back off and spool rather than exit.
+	// With the server gone, the agent must reuse the persisted credential and
+	// keep running: it should back off and spool rather than exit or re-enroll.
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	agent := exec.CommandContext(ctx, binary,
 		"-server", "http://127.0.0.1:1", // nothing listening
-		"-token", "agt_definitely-not-valid",
 		"-host", host,
 		"-file", filepath.Join(dir, "fake-auth.log"),
 		"-spool-dir", spoolDir,
-		"-state-dir", filepath.Join(dir, "state"),
+		"-state-dir", stateDir,
 		"-batch", "2",
 		"-insecure",
 	)
