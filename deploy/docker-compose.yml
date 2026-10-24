@@ -89,5 +89,26 @@ services:
     cap_drop:
       - ALL
 
+  # TLS termination. The console and the API stay on loopback; this is the only
+  # service published on a public interface.
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - web
+    environment:
+      HALIMISOC_SITE_ADDRESS: ${HALIMISOC_SITE_ADDRESS:?set HALIMISOC_SITE_ADDRESS}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./configs/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    security_opt:
+      - no-new-privileges:true
+
 volumes:
   postgres-data:
+  caddy-data:
+  caddy-config:

@@ -181,11 +181,13 @@ achieves.
 Trusting forwarded headers without a configured trusted-proxy list would let any
 client choose the address recorded in the audit log and used as a rate-limit key.
 
-A starting Caddyfile is provided at `deploy/configs/Caddyfile`. It forwards to
-the console only; the browser never reaches the API directly, which is what lets
-the API stay on loopback while the console remains the user-facing surface.
-Replace `halimisoc.example.test` with the deployment hostname and enable HSTS
-only after TLS is confirmed working.
+A starting Caddyfile is provided at `deploy/configs/Caddyfile`, and
+`docker compose up -d` starts it as the `caddy` service. It forwards to the
+console only; the browser never reaches the API directly, which is what lets the
+API stay on loopback while the console remains the user-facing surface. Ports
+8080 and 3000 stay bound to `127.0.0.1`; Caddy is the only service listening on
+a public interface. Set `HALIMISOC_SITE_ADDRESS` to the deployment hostname and
+leave HSTS commented out until the first certificate is confirmed working.
 
 ## Secret handling
 

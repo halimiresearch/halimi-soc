@@ -2,12 +2,12 @@
 #
 # The Go API speaks plain HTTP by design and the browser must never reach it
 # directly: the console (web:3000) is the only user-facing surface, and it
-# reaches the API over the compose network. Point this file at your hostname,
-# add it to the compose stack, and keep ports 8080/3000 on loopback.
+# reaches the API over the compose network. Set HALIMISOC_SITE_ADDRESS to your
+# hostname; ports 8080/3000 stay on loopback.
 #
 # See docs/security/configuration.md for the hardening checklist this fronts.
 
-halimisoc.example.test {
+{$HALIMISOC_SITE_ADDRESS:halimisoc.example.test} {
 	# The console sets HttpOnly, Secure cookies itself; the proxy only needs
 	# to terminate TLS and forward.
 	reverse_proxy web:3000
