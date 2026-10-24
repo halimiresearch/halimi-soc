@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"time"
@@ -140,7 +141,8 @@ func (s *Server) handleMFAEnable(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, CodeInternal, "MFA setup is unusable; run setup again")
 		return
 	}
-	if err := mfa.Verify(secret, req.Code, now); err != nil {
+	step, err := mfa.Verify(secret, req.Code, now)
+	if err != nil {
 		s.limiter.Fail(userKey, now)
 		s.limiter.Fail(ipKey, now)
 		s.writeAudit(r, audit.Entry{
@@ -166,6 +168,9 @@ func (s *Server) handleMFAEnable(w http.ResponseWriter, r *http.Request) {
 	p.User.TOTPEnabled = true
 	p.User.TOTPEnrolledAt = &now
 	p.User.BackupHashes = hashes
+	// The code that enabled MFA is spent; without this it would also work for
+	// a login inside the skew window.
+	p.User.TOTPLastStep = step
 	if err := s.store.SaveUser(r.Context(), p.User); err != nil {
 		s.fail(w, err, "enable mfa")
 		return
@@ -220,7 +225,15 @@ func (s *Server) handleMFADisable(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, CodeUnauthorized, "invalid credentials")
 		return
 	}
-	if _, ok := s.verifyUserCode(p.User, req.Code); !ok {
+	_, step, ok := s.verifyUserCode(p.User, req.Code)
+	if ok {
+		ok, err = s.consumeTOTPStep(r.Context(), p.User, step)
+		if err != nil {
+			s.fail(w, err, "record mfa step")
+			return
+		}
+	}
+	if !ok {
 		s.limiter.Fail(userKey, now)
 		s.limiter.Fail(ipKey, now)
 		s.writeAudit(r, audit.Entry{
@@ -331,8 +344,16 @@ func (s *Server) requireStepUp(w http.ResponseWriter, r *http.Request, p *princi
 		return deny("current password mismatch")
 	}
 	if p.User.TOTPEnabled {
-		backupHash, ok := s.verifyUserCode(p.User, code)
+		backupHash, step, ok := s.verifyUserCode(p.User, code)
 		if !ok {
+			return deny("current code mismatch")
+		}
+		advanced, err := s.consumeTOTPStep(r.Context(), p.User, step)
+		if err != nil {
+			s.fail(w, err, "record mfa step")
+			return false
+		}
+		if !advanced {
 			return deny("current code mismatch")
 		}
 		if backupHash != "" {
@@ -360,26 +381,43 @@ func (s *Server) requireStepUp(w http.ResponseWriter, r *http.Request, p *princi
 }
 
 // verifyUserCode checks a TOTP code or a single-use backup code.
-// For a backup code it returns the matching stored hash so the caller can
-// consume it atomically instead of rewriting the whole user record.
-func (s *Server) verifyUserCode(u *auth.User, code string) (backupHash string, ok bool) {
+// It returns the matched TOTP step (0 for a backup code) so the caller can
+// record it as used, and the matching stored hash so the caller can consume a
+// backup code atomically instead of rewriting the whole user record.
+func (s *Server) verifyUserCode(u *auth.User, code string) (backupHash string, step uint64, ok bool) {
 	code = strings.TrimSpace(code)
 	if code == "" {
-		return "", false
+		return "", 0, false
 	}
 	if u.TOTPSecret != "" {
 		if secret, err := mfa.Open(u.TOTPSecret, s.mfaKey); err == nil {
-			if mfa.Verify(secret, code, s.now()) == nil {
-				return "", true
+			if matched, err := mfa.Verify(secret, code, s.now()); err == nil {
+				return "", matched, true
 			}
 		}
 	}
 	for _, h := range u.BackupHashes {
 		if mfa.VerifyBackupCode(code, h) {
-			return h, true
+			return h, 0, true
 		}
 	}
-	return "", false
+	return "", 0, false
+}
+
+// consumeTOTPStep records a verified code as used. A code from a step that was
+// already accepted must fail like a wrong code instead of authenticating again.
+func (s *Server) consumeTOTPStep(ctx context.Context, u *auth.User, step uint64) (bool, error) {
+	if step == 0 {
+		return true, nil
+	}
+	advanced, err := s.store.AdvanceTOTPStep(ctx, u.ID, step)
+	if err != nil {
+		return false, err
+	}
+	if advanced {
+		u.TOTPLastStep = step
+	}
+	return advanced, nil
 }
 
 // verifyLoginMFA enforces the second factor after a correct password.
@@ -420,7 +458,15 @@ func (s *Server) verifyLoginMFA(w http.ResponseWriter, r *http.Request, u *auth.
 		writeError(w, http.StatusUnauthorized, CodeMFARequired, "multi-factor code required")
 		return false
 	}
-	backupHash, ok := s.verifyUserCode(u, code)
+	backupHash, step, ok := s.verifyUserCode(u, code)
+	if ok {
+		advanced, err := s.consumeTOTPStep(r.Context(), u, step)
+		if err != nil {
+			s.fail(w, err, "record mfa step")
+			return false
+		}
+		ok = advanced
+	}
 	if !ok {
 		s.limiter.Fail(userKey, now)
 		s.limiter.Fail(accountKey, now)

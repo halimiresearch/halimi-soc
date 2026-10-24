@@ -67,7 +67,7 @@ into the server-to-API `Cookie` header.
 | `HALIMISOC_MFA_KEY` set (base64 32B) | secrets sealed AES-256-GCM `v1:nonce:ct` |
 | `POST /auth/mfa/setup` | authenticated + CSRF + step-up (password, plus current code when MFA is enabled); rotates pending secret, returns secret + `otpauth_url` |
 | `POST /auth/mfa/enable` | verifies code (±1 step), enables, returns 10 backup codes once (hashes only stored) |
-| Login | `{username,password,totp_code\|backup_code}`; missing code -> 401 `MFA_REQUIRED`; backup codes single-use |
+| Login | `{username,password,totp_code\|backup_code}`; missing code -> 401 `MFA_REQUIRED`; TOTP codes and backup codes are single-use (replay -> 401) |
 | `POST /auth/mfa/disable` | needs password + code; clears secret and backups |
 | `POST /users/{id}/mfa/reset` | admin + CSRF lost-authenticator recovery; audited |
 | Guessing | per-user/per-IP backoff with 429, audited `MFA_LOGIN_FAILURE`, counted `mfa_failure_total` |

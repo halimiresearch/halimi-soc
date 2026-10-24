@@ -69,8 +69,9 @@ func TestMFALifecycle(t *testing.T) {
 		t.Fatalf("password-only login after enable = %d, want 401", status)
 	}
 
-	// Login with TOTP succeeds.
-	code2, err := mfa.CodeAt(setup.Secret, time.Now().UTC())
+	// Login with TOTP succeeds. The code that enabled MFA is spent, so use the
+	// next step; replaying it is exactly what this suite forbids.
+	code2, err := mfa.CodeAt(setup.Secret, time.Now().UTC().Add(30*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,6 +233,46 @@ func TestBackupCodeIsSingleUseUnderConcurrency(t *testing.T) {
 	}
 }
 
+// A TOTP code is single-use: the enable code must not authenticate a login,
+// and a login code replayed inside the skew window must fail.
+func TestTOTPCodeIsNotReplayable(t *testing.T) {
+	h := newHarness(t)
+	createOperator(t, h, "nina", "nina-password-value123", "ANALYST")
+	csrf, _ := h.login("nina", "nina-password-value123")
+	headers := map[string]string{"X-CSRF-Token": csrf}
+
+	setup := decode[struct {
+		Secret string `json:"secret"`
+	}](t, h.do(http.MethodPost, "/api/v1/auth/mfa/setup",
+		map[string]string{"password": "nina-password-value123"}, headers))
+	enableCode, err := mfa.CodeAt(setup.Secret, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp := h.do(http.MethodPost, "/api/v1/auth/mfa/enable",
+		map[string]string{"code": enableCode}, headers); resp.StatusCode != http.StatusOK {
+		t.Fatalf("enable = %d, want 200", resp.StatusCode)
+	}
+
+	h.client.Jar = freshJar(t)
+	if _, status := h.loginWithMFA("nina", "nina-password-value123", enableCode, ""); status != http.StatusUnauthorized {
+		t.Fatalf("enable code replayed at login = %d, want 401", status)
+	}
+
+	code, err := mfa.CodeAt(setup.Secret, time.Now().UTC().Add(30*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, status := h.loginWithMFA("nina", "nina-password-value123", code, ""); status != http.StatusOK {
+		t.Fatalf("first use of the code = %d, want 200", status)
+	}
+
+	h.client.Jar = freshJar(t)
+	if _, status := h.loginWithMFA("nina", "nina-password-value123", code, ""); status != http.StatusUnauthorized {
+		t.Fatalf("replayed login code = %d, want 401", status)
+	}
+}
+
 func (h *harness) loginWithMFA(username, password, totp, backup string) (string, int) {
 	h.t.Helper()
 	resp := h.do(http.MethodPost, "/api/v1/auth/login", map[string]string{
@@ -307,7 +348,8 @@ func TestMFASetupRequiresStepUp(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	code, _ = mfa.CodeAt(setup.Secret, time.Now().UTC())
+	// The enable code is spent; a step-up needs the next one.
+	code, _ = mfa.CodeAt(setup.Secret, time.Now().UTC().Add(30*time.Second))
 	resp = h.do(http.MethodPost, "/api/v1/auth/mfa/setup",
 		map[string]string{"password": "kate-password-value123", "code": code}, headers)
 	if resp.StatusCode != http.StatusOK {

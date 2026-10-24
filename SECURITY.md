@@ -29,7 +29,7 @@ These are implemented and covered by tests. Nothing else is claimed.
 | Rules cannot execute code and are rejected wholesale if invalid | `internal/detection/rules` |
 | Passwords are Argon2id-hashed; sessions are server-side and revocable | `internal/auth` |
 | Passwords are bounded 12–128 chars; overlong is rejected before hashing | `internal/auth/password.go`, `internal/api/handlers_auth.go` |
-| TOTP MFA (6-digit/30s/±1 skew) with sealed secrets and single-use backup codes | `internal/mfa`, `internal/api/handlers_mfa.go`, migration `0004_mfa.sql` |
+| TOTP MFA (6-digit/30s/±1 skew) with sealed secrets, single-use codes and single-use backup codes | `internal/mfa`, `internal/api/handlers_mfa.go`, migrations `0004_mfa.sql`, `0006_totp_last_step.sql` |
 | Passkeys (WebAuthn, ES256, none/packed, UV required, origin-bound, clone detection) | `internal/webauthn`, `internal/api/handlers_webauthn.go`, migration `0005_passkeys.sql` |
 | TOTP setup shows a local QR (no network) plus manual secret | `apps/web/src/components/MfaSettings.tsx` (`react-qr-code`) |
 | Sessions expire on absolute TTL and on 2h idle; activity refreshes `last_seen_at` | `internal/api/server.go`, `internal/config` |

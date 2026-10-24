@@ -87,7 +87,7 @@ func TestMigrationsApplyFromEmpty(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"0001_init.sql", "0002_incident_lifecycle.sql", "0003_incident_source_ips.sql", "0004_mfa.sql", "0005_passkeys.sql"} {
+	for _, want := range []string{"0001_init.sql", "0002_incident_lifecycle.sql", "0003_incident_source_ips.sql", "0004_mfa.sql", "0005_passkeys.sql", "0006_totp_last_step.sql"} {
 		found := false
 		for _, v := range versions {
 			if v == want {
@@ -111,7 +111,7 @@ func TestMigrationsApplyFromEmpty(t *testing.T) {
 	}
 
 	// The 0004 columns must exist: the user write path selects them.
-	for _, col := range []string{"totp_secret", "totp_enabled", "totp_enrolled_at", "backup_codes"} {
+	for _, col := range []string{"totp_secret", "totp_enabled", "totp_enrolled_at", "backup_codes", "totp_last_step"} {
 		var has bool
 		if err := admin.QueryRow(ctx, `
 			SELECT count(*) > 0 FROM information_schema.columns
@@ -191,7 +191,7 @@ func TestPostgresUserMFAAndPasskeyRoundTrip(t *testing.T) {
 		ID: "usr_mfa", Username: "mfa-user", PasswordHash: "x",
 		Role: authorization.RoleAnalyst, CreatedAt: now,
 		TOTPSecret: "v1:nonce:ct", TOTPEnabled: true,
-		BackupHashes: []string{"h1", "h2"},
+		BackupHashes: []string{"h1", "h2"}, TOTPLastStep: 42,
 	}
 	enrolled := now
 	u.TOTPEnrolledAt = &enrolled
@@ -210,6 +210,20 @@ func TestPostgresUserMFAAndPasskeyRoundTrip(t *testing.T) {
 	}
 	if got.TOTPEnrolledAt == nil {
 		t.Fatal("mfa enrolled_at did not round-trip")
+	}
+	if got.TOTPLastStep != 42 {
+		t.Fatalf("totp_last_step = %d, want 42", got.TOTPLastStep)
+	}
+
+	// A code is single-use: the accepted step and anything older must fail.
+	if ok, err := store.AdvanceTOTPStep(ctx, "usr_mfa", 42); err != nil || ok {
+		t.Fatalf("replayed step = %v (err %v), want false", ok, err)
+	}
+	if ok, err := store.AdvanceTOTPStep(ctx, "usr_mfa", 43); err != nil || !ok {
+		t.Fatalf("newer step = %v (err %v), want true", ok, err)
+	}
+	if ok, err := store.AdvanceTOTPStep(ctx, "usr_mfa", 43); err != nil || ok {
+		t.Fatalf("reused step = %v (err %v), want false", ok, err)
 	}
 
 	pk := &webauthn.Passkey{

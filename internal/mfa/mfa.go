@@ -101,19 +101,21 @@ func CodeAt(secret string, t time.Time) (string, error) {
 }
 
 // Verify checks code against secret at time now with ±SkewSteps skew.
-// It returns nil on match, ErrInvalidCode otherwise. Comparison is
-// constant-time over the candidate strings.
-func Verify(secret, code string, now time.Time) error {
+// It returns the time step that matched, so the caller can refuse a code that
+// already authenticated. Comparison is constant-time over the candidate
+// strings.
+func Verify(secret, code string, now time.Time) (uint64, error) {
 	code = strings.TrimSpace(code)
 	if len(code) != CodeDigits || !isDigits(code) {
-		return ErrInvalidCode
+		return 0, ErrInvalidCode
 	}
 	key, err := decodeSecret(secret)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	base := int64(now.UTC().Unix() / StepSeconds)
 	matched := 0
+	var matchedStep uint64
 	for d := -SkewSteps; d <= SkewSteps; d++ {
 		c := int64(base) + int64(d)
 		if c < 0 {
@@ -122,12 +124,13 @@ func Verify(secret, code string, now time.Time) error {
 		candidate := codeFor(key, uint64(c))
 		if subtle.ConstantTimeCompare([]byte(candidate), []byte(code)) == 1 {
 			matched = 1
+			matchedStep = uint64(c)
 		}
 	}
 	if matched != 1 {
-		return ErrInvalidCode
+		return 0, ErrInvalidCode
 	}
-	return nil
+	return matchedStep, nil
 }
 
 func decodeSecret(secret string) ([]byte, error) {

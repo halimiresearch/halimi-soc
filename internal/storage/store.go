@@ -121,6 +121,11 @@ type Store interface {
 	// logins cannot both redeem the same code.
 	ConsumeBackupCode(ctx context.Context, userID, hash string) (bool, error)
 
+	// AdvanceTOTPStep records step as used and reports whether it was newer
+	// than the last accepted one. It returns false for a replayed code, so two
+	// concurrent logins cannot both accept the same 30-second window.
+	AdvanceTOTPStep(ctx context.Context, userID string, step uint64) (bool, error)
+
 	// Sessions.
 	SaveSession(ctx context.Context, s *auth.Session) error
 	GetSession(ctx context.Context, id string) (*auth.Session, error)

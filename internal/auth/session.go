@@ -58,6 +58,10 @@ type User struct {
 	TOTPEnabled    bool       `json:"mfa_enabled"`
 	TOTPEnrolledAt *time.Time `json:"mfa_enrolled_at,omitempty"`
 	BackupHashes   []string   `json:"-"`
+
+	// TOTPLastStep is the highest time step a code was accepted for. It makes
+	// each code single-use even while it is still inside the skew window.
+	TOTPLastStep uint64 `json:"-"`
 }
 
 // Active reports whether the account may authenticate.

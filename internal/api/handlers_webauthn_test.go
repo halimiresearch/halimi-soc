@@ -373,7 +373,8 @@ func TestPasskeyRegisterRequiresStepUp(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	code, _ = mfa.CodeAt(setup.Secret, time.Now().UTC())
+	// The enable code is spent; registration needs the next one.
+	code, _ = mfa.CodeAt(setup.Secret, time.Now().UTC().Add(30*time.Second))
 	resp = h.do(http.MethodPost, "/api/v1/auth/webauthn/register/begin",
 		map[string]string{"name": "key", "password": "laura-password-value123", "code": code}, headers)
 	if resp.StatusCode != http.StatusOK {

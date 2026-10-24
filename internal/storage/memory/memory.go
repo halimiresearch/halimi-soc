@@ -486,6 +486,11 @@ func (s *Store) SaveUser(_ context.Context, u *auth.User) error {
 	}
 	cp := *u
 	cp.BackupHashes = append([]string(nil), u.BackupHashes...)
+	// A save carrying a stale copy must not reopen a step that was already
+	// accepted; PostgreSQL enforces the same monotonicity.
+	if existing, ok := s.users[u.ID]; ok && existing.TOTPLastStep > cp.TOTPLastStep {
+		cp.TOTPLastStep = existing.TOTPLastStep
+	}
 	s.users[u.ID] = &cp
 	return nil
 }
@@ -541,6 +546,20 @@ func (s *Store) ConsumeBackupCode(_ context.Context, userID, hash string) (bool,
 		}
 	}
 	return false, nil
+}
+
+func (s *Store) AdvanceTOTPStep(_ context.Context, userID string, step uint64) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u, ok := s.users[userID]
+	if !ok {
+		return false, nil
+	}
+	if u.TOTPLastStep >= step {
+		return false, nil
+	}
+	u.TOTPLastStep = step
+	return true, nil
 }
 
 func (s *Store) CountUsers(_ context.Context) (int64, error) {

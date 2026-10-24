@@ -687,8 +687,11 @@ new Go dependency.
   A correct password with a missing code returns 401 `MFA_REQUIRED` so the UI
   can prompt; a wrong code returns indistinguishable `invalid credentials`.
   Second-factor attempts are throttled per user and per source address.
-- TOTP kills password replay but stays relayable inside its validity window,
-  which is why passkeys exist alongside it (§9.6).
+- Each code is single-use: the accepted 30-second step is recorded in
+  `users.totp_last_step` (`AdvanceTOTPStep` is a compare-and-set), so replaying
+  a code inside the skew window fails like a wrong code. A code still has to be
+  stolen before its first use; passkeys (§9.6) remain the phishing-resistant
+  option.
 
 ### 9.6 Passkeys / WebAuthn (ADR-015)
 

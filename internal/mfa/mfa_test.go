@@ -8,6 +8,46 @@ import (
 	"github.com/halimi/halimisoc/internal/mfa"
 )
 
+func TestVerifyReturnsMatchedStep(t *testing.T) {
+	secret, err := mfa.GenerateSecret()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_700_000_000, 0).UTC()
+	code, err := mfa.CodeAt(secret, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	step, err := mfa.Verify(secret, code, now)
+	if err != nil {
+		t.Fatalf("valid code rejected: %v", err)
+	}
+	if want := uint64(now.Unix() / 30); step != want {
+		t.Fatalf("step = %d, want %d", step, want)
+	}
+}
+
+func TestVerifyReturnsTheCodesStepNotTheCurrentOne(t *testing.T) {
+	secret, err := mfa.GenerateSecret()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_700_000_000, 0).UTC()
+	code, err := mfa.CodeAt(secret, now.Add(-30*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	step, err := mfa.Verify(secret, code, now)
+	if err != nil {
+		t.Fatalf("code inside the skew window rejected: %v", err)
+	}
+	if want := uint64(now.Unix()/30) - 1; step != want {
+		t.Fatalf("step = %d, want %d: recording the current step would let the code replay", step, want)
+	}
+}
+
 func TestGenerateAndVerifyRoundTrip(t *testing.T) {
 	secret, err := mfa.GenerateSecret()
 	if err != nil {
@@ -21,7 +61,7 @@ func TestGenerateAndVerifyRoundTrip(t *testing.T) {
 	if len(code) != 6 {
 		t.Fatalf("code = %q, want 6 digits", code)
 	}
-	if err := mfa.Verify(secret, code, now); err != nil {
+	if _, err := mfa.Verify(secret, code, now); err != nil {
 		t.Fatalf("valid code rejected: %v", err)
 	}
 }
@@ -40,17 +80,17 @@ func TestSkewAcceptsAdjacentSteps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := mfa.Verify(secret, prev, now); err != nil {
+	if _, err := mfa.Verify(secret, prev, now); err != nil {
 		t.Errorf("previous step rejected: %v", err)
 	}
-	if err := mfa.Verify(secret, next, now); err != nil {
+	if _, err := mfa.Verify(secret, next, now); err != nil {
 		t.Errorf("next step rejected: %v", err)
 	}
 	old, err := mfa.CodeAt(secret, now.Add(-90*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := mfa.Verify(secret, old, now); err == nil {
+	if _, err := mfa.Verify(secret, old, now); err == nil {
 		t.Error("code 3 steps away accepted; skew window too wide")
 	}
 }
@@ -61,7 +101,7 @@ func TestWrongCodeRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, bad := range []string{"", "123", "1234567", "abcdef", "  "} {
-		if err := mfa.Verify(secret, bad, time.Now().UTC()); err == nil {
+		if _, err := mfa.Verify(secret, bad, time.Now().UTC()); err == nil {
 			t.Errorf("code %q accepted", bad)
 		}
 	}

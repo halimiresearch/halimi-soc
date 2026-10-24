@@ -830,6 +830,47 @@ func TestEventStoreIsBounded(t *testing.T) {
 	}
 }
 
+func TestAdvanceTOTPStepIsMonotonic(t *testing.T) {
+	s := memorystore.New()
+	if err := s.SaveUser(ctx(), &auth.User{
+		ID: "usr_step", Username: "step", PasswordHash: "x",
+		Role: authorization.RoleAnalyst, CreatedAt: time.Now().UTC(),
+		TOTPLastStep: 10,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if ok, err := s.AdvanceTOTPStep(ctx(), "usr_step", 10); err != nil || ok {
+		t.Fatalf("replayed step = %v (err %v), want false", ok, err)
+	}
+	if ok, err := s.AdvanceTOTPStep(ctx(), "usr_step", 12); err != nil || !ok {
+		t.Fatalf("newer step = %v (err %v), want true", ok, err)
+	}
+	if ok, err := s.AdvanceTOTPStep(ctx(), "usr_step", 11); err != nil || ok {
+		t.Fatalf("older step = %v (err %v), want false", ok, err)
+	}
+	if ok, err := s.AdvanceTOTPStep(ctx(), "usr_missing", 1); err != nil || ok {
+		t.Fatalf("unknown user = %v (err %v), want false", ok, err)
+	}
+
+	// Saving a stale copy of the user must not reopen an accepted step.
+	user, err := s.GetUser(ctx(), "usr_step")
+	if err != nil {
+		t.Fatal(err)
+	}
+	user.TOTPLastStep = 10
+	if err := s.SaveUser(ctx(), user); err != nil {
+		t.Fatal(err)
+	}
+	user, err = s.GetUser(ctx(), "usr_step")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.TOTPLastStep != 12 {
+		t.Fatalf("last step = %d after stale save, want 12", user.TOTPLastStep)
+	}
+}
+
 func TestConsumeBackupCodeIsAtomic(t *testing.T) {
 	s := memorystore.New()
 	if err := s.SaveUser(ctx(), &auth.User{

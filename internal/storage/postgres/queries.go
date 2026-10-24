@@ -528,8 +528,8 @@ func (s *Store) SaveUser(ctx context.Context, u *auth.User) error {
 	}
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO users (id, username, password_hash, role, disabled, created_at, last_login_at,
-			totp_secret, totp_enabled, totp_enrolled_at, backup_codes)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+			totp_secret, totp_enabled, totp_enrolled_at, backup_codes, totp_last_step)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
 		ON CONFLICT (id) DO UPDATE SET
 			username = EXCLUDED.username,
 			password_hash = EXCLUDED.password_hash,
@@ -539,10 +539,11 @@ func (s *Store) SaveUser(ctx context.Context, u *auth.User) error {
 			totp_secret = EXCLUDED.totp_secret,
 			totp_enabled = EXCLUDED.totp_enabled,
 			totp_enrolled_at = EXCLUDED.totp_enrolled_at,
-			backup_codes = EXCLUDED.backup_codes`,
+			backup_codes = EXCLUDED.backup_codes,
+			totp_last_step = GREATEST(users.totp_last_step, EXCLUDED.totp_last_step)`,
 		u.ID, strings.ToLower(u.Username), u.PasswordHash, string(u.Role), u.Disabled,
 		u.CreatedAt.UTC(), u.LastLoginAt,
-		nullIfEmpty(u.TOTPSecret), u.TOTPEnabled, u.TOTPEnrolledAt, backupJSON,
+		nullIfEmpty(u.TOTPSecret), u.TOTPEnabled, u.TOTPEnrolledAt, backupJSON, int64(u.TOTPLastStep),
 	)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -570,10 +571,22 @@ func (s *Store) ConsumeBackupCode(ctx context.Context, userID, hash string) (boo
 	return tag.RowsAffected() > 0, nil
 }
 
+func (s *Store) AdvanceTOTPStep(ctx context.Context, userID string, step uint64) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE users SET totp_last_step = $2
+		WHERE id = $1 AND totp_last_step < $2`,
+		userID, int64(step))
+	if err != nil {
+		return false, fmt.Errorf("postgres: advance totp step: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 func (s *Store) GetUserByUsername(ctx context.Context, username string) (*auth.User, error) {
 	row := s.pool.QueryRow(ctx, `
 		SELECT id, username, password_hash, role, disabled, created_at, last_login_at,
-		       coalesce(totp_secret,''), coalesce(totp_enabled,false), totp_enrolled_at, coalesce(backup_codes,'[]'::jsonb)
+		       coalesce(totp_secret,''), coalesce(totp_enabled,false), totp_enrolled_at, coalesce(backup_codes,'[]'::jsonb),
+		       totp_last_step
 		FROM users WHERE lower(username) = lower($1)`, username)
 	u, err := scanUser(row)
 	if err != nil {
@@ -585,7 +598,8 @@ func (s *Store) GetUserByUsername(ctx context.Context, username string) (*auth.U
 func (s *Store) GetUser(ctx context.Context, id string) (*auth.User, error) {
 	row := s.pool.QueryRow(ctx, `
 		SELECT id, username, password_hash, role, disabled, created_at, last_login_at,
-		       coalesce(totp_secret,''), coalesce(totp_enabled,false), totp_enrolled_at, coalesce(backup_codes,'[]'::jsonb)
+		       coalesce(totp_secret,''), coalesce(totp_enabled,false), totp_enrolled_at, coalesce(backup_codes,'[]'::jsonb),
+		       totp_last_step
 		FROM users WHERE id = $1`, id)
 	u, err := scanUser(row)
 	if err != nil {
@@ -606,7 +620,8 @@ func (s *Store) CountUsers(ctx context.Context) (int64, error) {
 func (s *Store) ListUsers(ctx context.Context) ([]*auth.User, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, username, password_hash, role, disabled, created_at, last_login_at,
-		       coalesce(totp_secret,''), coalesce(totp_enabled,false), totp_enrolled_at, coalesce(backup_codes,'[]'::jsonb)
+		       coalesce(totp_secret,''), coalesce(totp_enabled,false), totp_enrolled_at, coalesce(backup_codes,'[]'::jsonb),
+		       totp_last_step
 		FROM users ORDER BY username`)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: list users: %w", err)
@@ -1120,14 +1135,16 @@ func scanUser(sc scanner) (*auth.User, error) {
 		lastLogin *time.Time
 		enrolled  *time.Time
 		backups   []byte
+		lastStep  int64
 	)
 	err := sc.Scan(&u.ID, &u.Username, &u.PasswordHash, &role, &u.Disabled, &u.CreatedAt, &lastLogin,
-		&u.TOTPSecret, &u.TOTPEnabled, &enrolled, &backups)
+		&u.TOTPSecret, &u.TOTPEnabled, &enrolled, &backups, &lastStep)
 	if err != nil {
 		return nil, err
 	}
 	u.Role = authorizationRole(role)
 	u.CreatedAt = u.CreatedAt.UTC()
+	u.TOTPLastStep = uint64(max(lastStep, 0))
 	if lastLogin != nil {
 		t := lastLogin.UTC()
 		u.LastLoginAt = &t
