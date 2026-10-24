@@ -214,6 +214,7 @@ passed. Use TLS in any real deployment.
 |---|---|---|
 | `-server` | API base URL | `http://localhost:8080` |
 | `-token` / `-enroll-token` | per-agent token, or the enrollment secret | — |
+| `-ca-cert` | PEM file with CAs to trust in addition to the system pool | — |
 | `-host` | hostname reported to the server | OS hostname |
 | `-file` | log file to collect | — |
 | `-simulate` | run the synthetic scenario instead of reading a file | false |
@@ -225,13 +226,25 @@ passed. Use TLS in any real deployment.
 
 ## Deployment
 
-`deploy/docker-compose.yml` runs PostgreSQL, the API, the console and Caddy; set
-`HALIMISOC_SITE_ADDRESS` and start it with `docker compose up -d`. Caddy is the
-only service bound to a public interface.
+`deploy/docker-compose.yml` runs PostgreSQL, the API, the console and Caddy.
+From the repository root:
+
+```bash
+cp .env.example .env          # then replace every change-me value
+docker compose -f deploy/docker-compose.yml --env-file .env up -d
+```
+
+Caddy is the only service bound to a public interface. `HALIMISOC_SITE_ADDRESS`
+must resolve to this host and `HALIMISOC_WEBAUTHN_RP_ID` /
+`HALIMISOC_WEBAUTHN_ORIGINS` must match the console origin, or passkeys and TLS
+issuance will fail.
 
 Tagged releases publish `ghcr.io/<owner>/<repo>-{api,agent,web}:<tag>`. For a
-supervised agent install use `deploy/systemd/halimisoc-agent.service`. Upgrade
-and rollback steps: [`docs/operations/upgrade.md`](docs/operations/upgrade.md).
+supervised agent install use `deploy/systemd/halimisoc-agent.service`: enroll
+once with `-enroll-token` so the credential lands in the state directory, then
+start the unit, which authenticates with that persisted token. Put optional
+settings such as `HALIMISOC_CA_CERT` in `/etc/halimisoc/agent.env`. Upgrade and
+rollback steps: [`docs/operations/upgrade.md`](docs/operations/upgrade.md).
 
 ## Detection rules
 

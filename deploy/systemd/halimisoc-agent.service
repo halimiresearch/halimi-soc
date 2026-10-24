@@ -7,9 +7,14 @@ Wants=network-online.target
 # Create the account first: useradd --system --no-create-home halimisoc
 # The adm group reads auth.log on Debian/Ubuntu; adjust the log path and group
 # for the distribution.
+# Enroll once before enabling the unit:
+#   halimisoc-agent -server https://... -enroll-token ... -simulate \
+#     -state-dir /var/lib/halimisoc
+# The service then authenticates with the token persisted there. Optional
+# settings (e.g. HALIMISOC_CA_CERT) go in agent.env; the file may be absent.
 User=halimisoc
 SupplementaryGroups=adm
-EnvironmentFile=/etc/halimisoc/agent.env
+EnvironmentFile=-/etc/halimisoc/agent.env
 ExecStart=/usr/local/bin/halimisoc-agent -file /var/log/auth.log -state-dir /var/lib/halimisoc -spool-dir /var/lib/halimisoc/spool
 Restart=on-failure
 RestartSec=5s

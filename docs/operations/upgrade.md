@@ -8,7 +8,7 @@ keeps the previous tag for rollback.
 
 1. Take a database backup. This release does not ship backup tooling, and
    PostgreSQL is the only copy of the audit trail, events and incidents.
-2. Record the current tag: `docker compose ps --format '{{.Image}}'`.
+2. Record the current tag: `docker compose -f deploy/docker-compose.yml ps --format '{{.Image}}'`.
 3. Read the commit range between the running tag and the target tag. An applied
    migration is immutable, so a newer binary only ever adds migrations.
 
@@ -21,8 +21,8 @@ tag in its own compose file and runs `docker compose pull`.
 ```bash
 git fetch --tags
 git checkout vX.Y.Z
-docker compose build
-docker compose up -d
+docker compose -f deploy/docker-compose.yml --env-file .env build
+docker compose -f deploy/docker-compose.yml --env-file .env up -d
 ```
 
 The API applies every embedded migration at startup, inside a transaction per
@@ -41,8 +41,8 @@ systemctl restart halimisoc-agent
 
 ```bash
 git checkout <previous-tag>
-docker compose build
-docker compose up -d
+docker compose -f deploy/docker-compose.yml --env-file .env build
+docker compose -f deploy/docker-compose.yml --env-file .env up -d
 ```
 
 Rollback is safe only when the previous tag does not need a column the newer
@@ -58,5 +58,6 @@ systemctl restart halimisoc-agent
 systemctl status halimisoc-agent
 ```
 
-The enrollment token is used once; afterwards the agent authenticates with the
-token persisted in its state directory.
+The enrollment token is a shared bootstrap credential that can enroll more than
+one agent; it is not consumed. Afterwards the agent authenticates with the
+per-agent token persisted in its state directory (mode 0600).

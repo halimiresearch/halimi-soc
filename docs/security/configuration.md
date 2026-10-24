@@ -181,8 +181,10 @@ achieves.
 Trusting forwarded headers without a configured trusted-proxy list would let any
 client choose the address recorded in the audit log and used as a rate-limit key.
 
-A starting Caddyfile is provided at `deploy/configs/Caddyfile`, and
-`docker compose up -d` starts it as the `caddy` service. It forwards to the
+A starting Caddyfile is provided at `deploy/configs/Caddyfile`, and the compose
+stack starts it as the `caddy` service. Start the stack from the repository root
+with `docker compose -f deploy/docker-compose.yml --env-file .env up -d`; the
+compose file reads its settings from that environment file. It forwards to the
 console only; the browser never reaches the API directly, which is what lets the
 API stay on loopback while the console remains the user-facing surface. Ports
 8080 and 3000 stay bound to `127.0.0.1`; Caddy is the only service listening on
