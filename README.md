@@ -223,6 +223,16 @@ passed. Use TLS in any real deployment.
 | `-queue` | in-memory events before spilling to disk | `4096` |
 | `-spool-bytes` | hard spool size cap | `100 MiB` |
 
+## Deployment
+
+`deploy/docker-compose.yml` runs PostgreSQL, the API, the console and Caddy; set
+`HALIMISOC_SITE_ADDRESS` and start it with `docker compose up -d`. Caddy is the
+only service bound to a public interface.
+
+Tagged releases publish `ghcr.io/<owner>/<repo>-{api,agent,web}:<tag>`. For a
+supervised agent install use `deploy/systemd/halimisoc-agent.service`. Upgrade
+and rollback steps: [`docs/operations/upgrade.md`](docs/operations/upgrade.md).
+
 ## Detection rules
 
 Rules are YAML data, validated as a whole at startup. A rule file that fails

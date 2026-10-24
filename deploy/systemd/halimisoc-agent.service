@@ -1,0 +1,25 @@
+[Unit]
+Description=HalimiSOC collection agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Create the account first: useradd --system --no-create-home halimisoc
+# The adm group reads auth.log on Debian/Ubuntu; adjust the log path and group
+# for the distribution.
+User=halimisoc
+SupplementaryGroups=adm
+EnvironmentFile=/etc/halimisoc/agent.env
+ExecStart=/usr/local/bin/halimisoc-agent -file /var/log/auth.log -state-dir /var/lib/halimisoc -spool-dir /var/lib/halimisoc/spool
+Restart=on-failure
+RestartSec=5s
+StateDirectory=halimisoc
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadOnlyPaths=/var/log
+ReadWritePaths=/var/lib/halimisoc
+
+[Install]
+WantedBy=multi-user.target
