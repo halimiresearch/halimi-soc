@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -54,13 +57,30 @@ func (e *apiError) permanent() bool {
 	return e.Status >= 400 && e.Status < 500
 }
 
-func newClient(opts options, log *slog.Logger) *client {
+func newClient(opts options, log *slog.Logger) (*client, error) {
 	base, err := url.Parse(opts.server)
 	if err != nil {
 		// validate() already ensured the URL parses well enough to start; this
 		// guard exists so the struct is always usable.
 		base = &url.URL{Scheme: "http", Host: "localhost:8080"}
 	}
+
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
+	if opts.caCert != "" {
+		pem, err := os.ReadFile(opts.caCert)
+		if err != nil {
+			return nil, fmt.Errorf("read CA file: %w", err)
+		}
+		pool, err := x509.SystemCertPool()
+		if err != nil || pool == nil {
+			pool = x509.NewCertPool()
+		}
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("CA file %s contains no certificates", opts.caCert)
+		}
+		tlsConfig.RootCAs = pool
+	}
+
 	return &client{
 		base:  base,
 		token: opts.token,
@@ -72,9 +92,10 @@ func newClient(opts options, log *slog.Logger) *client {
 				MaxIdleConns:        10,
 				MaxIdleConnsPerHost: 4,
 				IdleConnTimeout:     90 * time.Second,
+				TLSClientConfig:     tlsConfig,
 			},
 		},
-	}
+	}, nil
 }
 
 type enrollRequest struct {

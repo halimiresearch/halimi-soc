@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"runtime"
+	"sync/atomic"
 	"time"
 
 	"github.com/halimi/halimisoc/internal/events/model"
@@ -22,7 +23,7 @@ const (
 // fresh telemetry is not delayed behind a backlog, and the spool is drained
 // afterwards. Both paths are idempotent on the server, so a partial failure
 // results in re-delivery rather than loss.
-func senderLoop(ctx context.Context, c *client, sp *spool, queue <-chan []*model.Event, opts options, log *slog.Logger, producerDone <-chan struct{}) error {
+func senderLoop(ctx context.Context, c *client, sp *spool, queue <-chan []*model.Event, queued *atomic.Int64, opts options, log *slog.Logger, producerDone <-chan struct{}) error {
 	backoff := minBackoff
 
 	for {
@@ -30,9 +31,10 @@ func senderLoop(ctx context.Context, c *client, sp *spool, queue <-chan []*model
 		case <-ctx.Done():
 			// Wait for the producer's final batch, then spool whatever is still queued.
 			<-producerDone
-			drainQueueToSpool(sp, queue, log)
+			drainQueueToSpool(sp, queue, queued, log)
 			return nil
 		case batch := <-queue:
+			queued.Add(-int64(len(batch)))
 			if err := deliver(ctx, c, sp, batch, &backoff, log); err != nil {
 				return err
 			}
@@ -100,10 +102,11 @@ func deliver(ctx context.Context, c *client, sp *spool, batch []*model.Event, ba
 }
 
 // drainQueueToSpool persists batches left in the channel at shutdown.
-func drainQueueToSpool(sp *spool, queue <-chan []*model.Event, log *slog.Logger) {
+func drainQueueToSpool(sp *spool, queue <-chan []*model.Event, queued *atomic.Int64, log *slog.Logger) {
 	for {
 		select {
 		case batch := <-queue:
+			queued.Add(-int64(len(batch)))
 			if len(batch) == 0 {
 				continue
 			}
@@ -157,13 +160,13 @@ func drainSpool(ctx context.Context, c *client, sp *spool, opts options, log *sl
 }
 
 // heartbeatLoop reports liveness and buffer health.
-func heartbeatLoop(ctx context.Context, c *client, opts options, sp *spool, log *slog.Logger) {
+func heartbeatLoop(ctx context.Context, c *client, sp *spool, queued *atomic.Int64, log *slog.Logger) {
 	// Send one immediately so the UI shows the agent as online without waiting
 	// for the first interval.
 	send := func() {
 		ctxTimeout, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		if err := c.heartbeat(ctxTimeout, int64(opts.queueSize), sp.Size(), sp.Dropped() > 0); err != nil {
+		if err := c.heartbeat(ctxTimeout, queued.Load(), sp.Size(), sp.Dropped() > 0); err != nil {
 			log.Warn("heartbeat failed", "error", err)
 		}
 	}

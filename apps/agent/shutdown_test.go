@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 
 	"github.com/halimi/halimisoc/internal/events/model"
@@ -105,8 +106,10 @@ func TestDrainQueueToSpoolOnShutdown(t *testing.T) {
 	queue := make(chan []*model.Event, 3)
 	queue <- []*model.Event{{ID: "evt_1"}}
 	queue <- []*model.Event{{ID: "evt_2"}}
+	var queued atomic.Int64
+	queued.Store(2)
 
-	drainQueueToSpool(sp, queue, log)
+	drainQueueToSpool(sp, queue, &queued, log)
 
 	// The queue must be empty: a full queue on exit is telemetry nobody will
 	// ever deliver.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/halimi/halimisoc/internal/events/model"
@@ -20,6 +21,7 @@ type producer struct {
 	client  *client
 	spool   *spool
 	queue   chan []*model.Event
+	queued  *atomic.Int64
 	log     *slog.Logger
 	reg     *parser.Registry
 	optsVal validation.Options
@@ -37,7 +39,7 @@ type producerStats struct {
 	ParserErrors    uint64
 }
 
-func newProducer(opts options, client *client, spool *spool, queue chan []*model.Event, log *slog.Logger) *producer {
+func newProducer(opts options, client *client, spool *spool, queue chan []*model.Event, queued *atomic.Int64, log *slog.Logger) *producer {
 	validationOpts := validation.DefaultOptions()
 	validationOpts.ClockSkew = 5 * time.Minute
 
@@ -46,6 +48,7 @@ func newProducer(opts options, client *client, spool *spool, queue chan []*model
 		client:  client,
 		spool:   spool,
 		queue:   queue,
+		queued:  queued,
 		log:     log,
 		reg:     parser.Default(),
 		optsVal: validationOpts,
@@ -194,9 +197,11 @@ func (p *producer) enqueue(events []*model.Event) {
 	if len(events) == 0 {
 		return
 	}
+	p.queued.Add(int64(len(events)))
 	select {
 	case p.queue <- events:
 	default:
+		p.queued.Add(-int64(len(events)))
 		// The sender is behind. Spilling to disk keeps the collection loop live
 		// so the file offset keeps advancing; blocking here would let the log
 		// file grow faster than it is read, which is how a collector silently

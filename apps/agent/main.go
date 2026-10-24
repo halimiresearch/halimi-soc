@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -42,6 +43,7 @@ type options struct {
 	spoolBytes  int64
 	batchSize   int
 	insecure    bool
+	caCert      string
 }
 
 func main() {
@@ -66,6 +68,7 @@ func run() error {
 	flag.Int64Var(&opts.spoolBytes, "spool-bytes", 100<<20, "maximum on-disk spool size in bytes")
 	flag.IntVar(&opts.batchSize, "batch", 100, "maximum events per request")
 	flag.BoolVar(&opts.insecure, "insecure", false, "allow plain HTTP (development only)")
+	flag.StringVar(&opts.caCert, "ca-cert", os.Getenv("HALIMISOC_CA_CERT"), "PEM file with additional trusted CAs")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
@@ -87,14 +90,31 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	client := newClient(opts, log)
+	// An enrolled agent keeps its credential on disk so the enrollment secret
+	// does not have to live on the host forever. The flag and environment still
+	// win, which keeps the first boot and rotation paths explicit.
+	if opts.token == "" {
+		token, err := loadToken(opts.stateDir)
+		if err != nil {
+			return err
+		}
+		opts.token = token
+	}
+
+	client, err := newClient(opts, log)
+	if err != nil {
+		return err
+	}
 
 	if opts.token == "" {
 		if opts.enrollToken == "" {
-			return errors.New("either -token or -enroll-token is required")
+			return errors.New("either -token, a persisted token, or -enroll-token is required")
 		}
 		token, agentID, err := client.enroll(ctx, opts)
 		if err != nil {
+			return err
+		}
+		if err := saveToken(opts.stateDir, token); err != nil {
 			return err
 		}
 		opts.token = token
@@ -122,20 +142,23 @@ func run() error {
 	// instead of blocking, so a slow server degrades collection rather than
 	// stalling it, and no telemetry is dropped without a counter.
 	queue := make(chan []*model.Event, 8)
+	// queued counts events waiting in memory, which is what the heartbeat
+	// reports. The configured queue size is a bound, not a backlog.
+	var queued atomic.Int64
 	producerDone := make(chan struct{})
 
 	var senderWG sync.WaitGroup
 	senderWG.Add(1)
 	go func() {
 		defer senderWG.Done()
-		if err := senderLoop(ctx, client, spool, queue, opts, log, producerDone); err != nil && !errors.Is(err, context.Canceled) {
+		if err := senderLoop(ctx, client, spool, queue, &queued, opts, log, producerDone); err != nil && !errors.Is(err, context.Canceled) {
 			log.Error("sender stopped", "error", err)
 			stop()
 		}
 	}()
-	go heartbeatLoop(ctx, client, opts, spool, log)
+	go heartbeatLoop(ctx, client, spool, &queued, log)
 
-	producer := newProducer(opts, client, spool, queue, log)
+	producer := newProducer(opts, client, spool, queue, &queued, log)
 	if opts.simulate {
 		err = producer.runSimulation(ctx)
 	} else {
