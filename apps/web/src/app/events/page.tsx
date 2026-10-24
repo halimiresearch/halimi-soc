@@ -24,6 +24,7 @@ interface SearchParams {
   source_ip?: string
   type?: string
   severity?: string
+  cursor?: string
 }
 
 export default async function EventsPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
@@ -35,15 +36,34 @@ export default async function EventsPage({ searchParams }: { searchParams: Promi
   const actor = sanitize(params.actor)
   const sourceIp = sanitize(params.source_ip)
   const type = sanitize(params.type)
+  const cursor = sanitize(params.cursor)
 
   let events: Awaited<ReturnType<typeof listEvents>>['events'] = []
+  let nextCursor: string | undefined
   let error: unknown = null
 
   try {
-    const page = await listEvents(session, { severity, host, actor, sourceIp, type, limit: 100 })
+    const page = await listEvents(session, { severity, host, actor, sourceIp, type, cursor, limit: 100 })
     events = page.events
+    nextCursor = page.next_cursor
   } catch (cause) {
     error = cause
+  }
+
+  const filterHref = (overrides: Record<string, string | undefined>) => {
+    const query = new URLSearchParams()
+    for (const [key, value] of Object.entries({
+      severity,
+      type,
+      host,
+      actor,
+      source_ip: sourceIp,
+      ...overrides,
+    })) {
+      if (value) query.set(key, value)
+    }
+    const encoded = query.toString()
+    return encoded ? `?${encoded}` : '?'
   }
 
   return (
@@ -149,6 +169,21 @@ export default async function EventsPage({ searchParams }: { searchParams: Promi
           </div>
         )}
       </div>
+
+      {cursor || nextCursor ? (
+        <nav className="button-row" aria-label="Pagination" style={{ marginTop: 12 }}>
+          {cursor ? (
+            <a href={filterHref({})} className="small">
+              Newest
+            </a>
+          ) : null}
+          {nextCursor ? (
+            <a href={filterHref({ cursor: nextCursor })} className="small">
+              Older events
+            </a>
+          ) : null}
+        </nav>
+      ) : null}
 
       <EventDetail events={events} />
     </Shell>

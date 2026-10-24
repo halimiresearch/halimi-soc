@@ -27,6 +27,7 @@ interface SearchParams {
   status?: string
   host?: string
   rule_id?: string
+  cursor?: string
 }
 
 export default async function AlertsPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
@@ -37,15 +38,35 @@ export default async function AlertsPage({ searchParams }: { searchParams: Promi
   const status = STATUSES.find((s) => s === params.status)
   const host = sanitizeFilter(params.host)
   const ruleId = sanitizeFilter(params.rule_id)
+  const cursor = sanitizeFilter(params.cursor)
 
   let alerts: Awaited<ReturnType<typeof listAlerts>>['alerts'] = []
+  let nextCursor: string | undefined
   let error: unknown = null
 
   try {
-    const page = await listAlerts(session, { severity, status, host, ruleId, limit: 100 })
+    const page = await listAlerts(session, { severity, status, host, ruleId, cursor, limit: 100 })
     alerts = page.alerts
+    nextCursor = page.next_cursor
   } catch (cause) {
     error = cause
+  }
+
+  // Cursor navigation keeps the filters in the URL, so a page can be linked
+  // and reloaded without re-applying them.
+  const filterHref = (overrides: Record<string, string | undefined>) => {
+    const query = new URLSearchParams()
+    for (const [key, value] of Object.entries({
+      severity,
+      status,
+      host,
+      rule_id: ruleId,
+      ...overrides,
+    })) {
+      if (value) query.set(key, value)
+    }
+    const encoded = query.toString()
+    return encoded ? `?${encoded}` : '?'
   }
 
   const canMutate = session.role === 'ADMIN' || session.role === 'ANALYST'
@@ -186,6 +207,21 @@ export default async function AlertsPage({ searchParams }: { searchParams: Promi
           </div>
         )}
       </div>
+
+      {cursor || nextCursor ? (
+        <nav className="button-row" aria-label="Pagination" style={{ marginTop: 12 }}>
+          {cursor ? (
+            <a href={filterHref({})} className="small">
+              Newest
+            </a>
+          ) : null}
+          {nextCursor ? (
+            <a href={filterHref({ cursor: nextCursor })} className="small">
+              Older alerts
+            </a>
+          ) : null}
+        </nav>
+      ) : null}
     </Shell>
   )
 }
