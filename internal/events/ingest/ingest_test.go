@@ -2,6 +2,7 @@ package ingest_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,6 +99,24 @@ func TestIngestInsertsAndDetects(t *testing.T) {
 	}
 	if len(res.Incidents) != 1 {
 		t.Fatalf("incidents = %d, want 1", len(res.Incidents))
+	}
+}
+
+func TestIngestRecordsBatchDuration(t *testing.T) {
+	ing, _, reg, now := build(t)
+	reg.Histogram(metrics.IngestBatchDuration, "ingest latency", []float64{1})
+	base := *now
+
+	if _, err := ing.Ingest(context.Background(), []*model.Event{sshFailure(id.NewEvent(), "203.0.113.9", base)}); err != nil {
+		t.Fatal(err)
+	}
+
+	var out strings.Builder
+	if err := reg.WritePrometheus(&out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), metrics.IngestBatchDuration+"_count 1") {
+		t.Fatalf("batch duration was not recorded:\n%s", out.String())
 	}
 }
 

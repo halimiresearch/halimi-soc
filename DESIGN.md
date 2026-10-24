@@ -818,7 +818,11 @@ correlation_error_total    detection_state_size       agent_last_heartbeat
 ai_requests_total          ai_latency_ms              ai_errors_total
 parser_error_total         rule_load_failure_total    clock_skew_anomaly_total
 spool_bytes                sse_active_connections
+http_request_duration_seconds   ingest_batch_duration_seconds
 ```
+
+The two `_duration_seconds` series are histograms (fixed buckets, rendered as
+`_bucket`, `_sum` and `_count`); the rest are counters and gauges.
 
 ---
 

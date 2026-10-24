@@ -393,8 +393,10 @@ func (r *statusRecorder) Unwrap() http.ResponseWriter {
 func (s *Server) requestLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := s.now()
+		started := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
+		s.reg.Observe(metrics.HTTPRequestDuration, time.Since(started).Seconds(), metrics.L("method", r.Method))
 		s.log.Info("http",
 			"method", r.Method,
 			"path", r.URL.Path,

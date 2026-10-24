@@ -116,6 +116,9 @@ func (in *Ingester) Ingest(ctx context.Context, events []*model.Event) (*Result,
 		return nil, fmt.Errorf("%w: %d > %d", ErrBatchTooLarge, len(events), in.maxBatch)
 	}
 
+	start := time.Now()
+	defer func() { in.reg.Observe(metrics.IngestBatchDuration, time.Since(start).Seconds()) }()
+
 	res := &Result{Received: len(events)}
 	in.reg.Add(metrics.EventsReceivedTotal, float64(len(events)))
 

@@ -8,6 +8,57 @@ import (
 	"github.com/halimi/halimisoc/internal/metrics"
 )
 
+func TestHistogramRendersCumulativeBuckets(t *testing.T) {
+	r := metrics.New()
+	r.Histogram("op_duration_seconds", "help", []float64{1, 0.1})
+	r.Observe("op_duration_seconds", 0.05)
+	r.Observe("op_duration_seconds", 0.5)
+
+	var b strings.Builder
+	if err := r.WritePrometheus(&b); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+	for _, want := range []string{
+		`op_duration_seconds_bucket{le="0.1"} 1`,
+		`op_duration_seconds_bucket{le="1"} 2`,
+		`op_duration_seconds_bucket{le="+Inf"} 2`,
+		`op_duration_seconds_sum 0.55`,
+		`op_duration_seconds_count 2`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+func TestHistogramKeepsLabels(t *testing.T) {
+	r := metrics.New()
+	r.Histogram("op_duration_seconds", "help", []float64{0.1})
+	r.Observe("op_duration_seconds", 0.2, metrics.L("method", "GET"))
+
+	var b strings.Builder
+	if err := r.WritePrometheus(&b); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(b.String(), `op_duration_seconds_bucket{le="+Inf",method="GET"} 1`) {
+		t.Fatalf("labels or order lost:\n%s", b.String())
+	}
+}
+
+func TestObserveUnknownHistogramIsIgnored(t *testing.T) {
+	r := metrics.New()
+	r.Observe("never_registered", 1)
+
+	var b strings.Builder
+	if err := r.WritePrometheus(&b); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(b.String(), "never_registered") {
+		t.Fatalf("an unregistered observation must not mint a series:\n%s", b.String())
+	}
+}
+
 func TestCounterAndGauge(t *testing.T) {
 	r := metrics.New()
 
