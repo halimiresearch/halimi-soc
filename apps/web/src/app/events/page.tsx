@@ -121,13 +121,13 @@ export default async function EventsPage({ searchParams }: { searchParams: Promi
 
       <div className="card">
         <div className="card-header">
-          <h2 className="card-title">{events.length} event(s)</h2>
+          <h2 className="card-title">{error ? 'Events unavailable' : `${events.length} event(s)`}</h2>
           <span className="dim" style={{ fontSize: 12 }}>
             Newest first. Expand a row for its retained raw line.
           </span>
         </div>
 
-        {events.length === 0 ? (
+        {error ? null : events.length === 0 ? (
           <EmptyState
             title="No events match these filters"
             hint="Events appear as agents deliver telemetry. A rejected event is reported to the agent, not stored."

@@ -131,7 +131,7 @@ export default async function AlertsPage({ searchParams }: { searchParams: Promi
       <div className="card">
         <div className="card-header">
           <h2 className="card-title">
-            {alerts.length} alert{alerts.length === 1 ? '' : 's'}
+            {error ? 'Alerts unavailable' : `${alerts.length} alert${alerts.length === 1 ? '' : 's'}`}
           </h2>
           {!canMutate ? (
             <span className="dim" style={{ fontSize: 12 }}>
@@ -140,7 +140,7 @@ export default async function AlertsPage({ searchParams }: { searchParams: Promi
           ) : null}
         </div>
 
-        {alerts.length === 0 ? (
+        {error ? null : alerts.length === 0 ? (
           <EmptyState
             title="No alerts match these filters"
             hint="Detection is deterministic: an alert appears only when a rule's threshold is crossed inside its window."

@@ -161,6 +161,11 @@ Cursor pagination is used rather than offsets because offset pagination skips or
 repeats rows when new telemetry arrives between two requests, which is the normal
 case for an event feed.
 
+A request that supplies a cursor but resolves to no rows returns
+`400 BAD_REQUEST` rather than an empty page: the API only issues `next_cursor`
+when a further page exists, so the anchor was purged or forged. An empty page
+would be indistinguishable from "nothing matches these filters".
+
 ## Collection shapes
 
 Every list endpoint answers with its collection as a JSON **array**, including

@@ -12,6 +12,14 @@ import (
 	"github.com/halimi/halimisoc/internal/storage"
 )
 
+// staleCursor reports a page that cannot exist for a client that followed
+// next_cursor: the anchor was purged or forged. The API only issues a cursor
+// when a further page exists, so an empty page would otherwise reach the
+// console as "nothing matches these filters" — a false negative.
+func staleCursor(cursor string, n int) bool {
+	return cursor != "" && n == 0
+}
+
 // --- Events ---------------------------------------------------------------
 
 // handleListEvents returns a page of normalized events.
@@ -55,6 +63,10 @@ func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
 	page, err := s.store.ListEvents(r.Context(), q)
 	if err != nil {
 		s.fail(w, err, "list events")
+		return
+	}
+	if staleCursor(q.Cursor, len(page.Events)) {
+		writeError(w, http.StatusBadRequest, CodeBadRequest, "cursor is no longer valid")
 		return
 	}
 	page.Events = nonNil(page.Events)
@@ -163,6 +175,10 @@ func (s *Server) handleListAlerts(w http.ResponseWriter, r *http.Request) {
 	page, err := s.store.ListAlerts(r.Context(), q)
 	if err != nil {
 		s.fail(w, err, "list alerts")
+		return
+	}
+	if staleCursor(q.Cursor, len(page.Alerts)) {
+		writeError(w, http.StatusBadRequest, CodeBadRequest, "cursor is no longer valid")
 		return
 	}
 	page.Alerts = nonNil(page.Alerts)
