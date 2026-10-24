@@ -396,15 +396,30 @@ func (s *Server) requestLog(next http.Handler) http.Handler {
 		started := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
-		s.reg.Observe(metrics.HTTPRequestDuration, time.Since(started).Seconds(), metrics.L("method", r.Method))
+		// r.Method is attacker-chosen. Folding unknown verbs into one label
+		// keeps the series bounded; the log line gets the same treatment so a
+		// long token cannot amplify disk writes.
+		method := observedMethod(r.Method)
+		s.reg.Observe(metrics.HTTPRequestDuration, time.Since(started).Seconds(), metrics.L("method", method))
 		s.log.Info("http",
-			"method", r.Method,
+			"method", method,
 			"path", r.URL.Path,
 			"status", rec.status,
 			"duration_ms", s.now().Sub(start).Milliseconds(),
 			"remote", clientIP(r),
 		)
 	})
+}
+
+// observedMethod bounds the metric and log label to the verbs the API serves.
+func observedMethod(m string) string {
+	switch m {
+	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut,
+		http.MethodPatch, http.MethodDelete, http.MethodOptions:
+		return m
+	default:
+		return "other"
+	}
 }
 
 // clientIP returns the peer address without trusting forwarding headers.

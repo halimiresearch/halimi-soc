@@ -69,6 +69,7 @@ func newHarnessWithStore(t *testing.T, store *memorystore.Store, wrap func(stora
 		apiStore = wrap(store)
 	}
 	reg := metrics.New()
+	reg.Histogram(metrics.HTTPRequestDuration, "test", []float64{1})
 	detector := engine.New(ruleSet, state.New(state.DefaultOptions()), apiStore, reg)
 	correlator := correlation.NewEngine(apiStore, reg)
 

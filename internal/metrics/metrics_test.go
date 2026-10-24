@@ -32,6 +32,31 @@ func TestHistogramRendersCumulativeBuckets(t *testing.T) {
 	}
 }
 
+func TestHistogramRendersLabelsOnSumAndCount(t *testing.T) {
+	r := metrics.New()
+	r.Histogram("op_duration_seconds", "help", []float64{0.1, 1})
+	r.Observe("op_duration_seconds", 0.05, metrics.L("method", "GET"))
+	r.Observe("op_duration_seconds", 0.5, metrics.L("method", "POST"))
+
+	var b strings.Builder
+	if err := r.WritePrometheus(&b); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`op_duration_seconds_sum{method="GET"} 0.05`,
+		`op_duration_seconds_sum{method="POST"} 0.5`,
+		`op_duration_seconds_count{method="GET"} 1`,
+		`op_duration_seconds_count{method="POST"} 1`,
+	} {
+		if !strings.Contains(b.String(), want) {
+			t.Fatalf("missing %q in:\n%s", want, b.String())
+		}
+	}
+	if strings.Contains(b.String(), "\nop_duration_seconds_sum ") {
+		t.Fatalf("sum without its labels would collide across series:\n%s", b.String())
+	}
+}
+
 func TestHistogramKeepsLabels(t *testing.T) {
 	r := metrics.New()
 	r.Histogram("op_duration_seconds", "help", []float64{0.1})

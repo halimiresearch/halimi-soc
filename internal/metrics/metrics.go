@@ -222,6 +222,19 @@ func bucketLabels(labels []Label, le string) string {
 	return "{" + strings.Join(parts, ",") + "}"
 }
 
+// seriesLabels renders the label set without a bucket. An unlabeled series has
+// no braces, which is what Prometheus expects for the sum/count suffixes.
+func seriesLabels(labels []Label) string {
+	if len(labels) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(labels))
+	for _, l := range labels {
+		parts = append(parts, fmt.Sprintf("%s=%q", l.Name, escapeLabel(l.Value)))
+	}
+	return "{" + strings.Join(parts, ",") + "}"
+}
+
 // WritePrometheus renders all series in Prometheus text exposition format.
 func (r *Registry) WritePrometheus(w io.Writer) error {
 	r.mu.RLock()
@@ -268,10 +281,10 @@ func (r *Registry) WritePrometheus(w io.Writer) error {
 		if _, err := fmt.Fprintf(w, "%s_bucket%s %d\n", h.name, bucketLabels(h.labels, "+Inf"), h.counts[len(h.bounds)]); err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintf(w, "%s_sum %g\n", h.name, h.sum); err != nil {
+		if _, err := fmt.Fprintf(w, "%s_sum%s %g\n", h.name, seriesLabels(h.labels), h.sum); err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintf(w, "%s_count %d\n", h.name, h.count); err != nil {
+		if _, err := fmt.Fprintf(w, "%s_count%s %d\n", h.name, seriesLabels(h.labels), h.count); err != nil {
 			return err
 		}
 	}
